@@ -1,108 +1,90 @@
 import { z } from "zod";
+import { objectIdSchema } from "./common.js";
 
-// User Validations
+// ─── Constants (kept in sync with user.model limits) ──────────────────────────
+
+const NAME_MIN = 2;
+const NAME_MAX = 50;
+const USERNAME_MIN = 3;
+const USERNAME_MAX = 30;
+const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
+const BIO_MAX = 500;          // FIX: was 190 — model allows 500
+const CUSTOM_STATUS_MAX = 128; // FIX: label was "Status" — should be "Custom status"
+
+// ─── Create user (admin / OAuth flow) ────────────────────────────────────────
+// FIX: provider enum included "discord" which is not in IUser — removed.
+// Supported providers match the model: email | google | github | facebook.
+
 export const createUserSchema = z.object({
     name: z
         .string()
-        .min(2, "Name must be at least 2 characters")
-        .max(50, "Name cannot exceed 50 characters")
+        .min(NAME_MIN, `Name must be at least ${NAME_MIN} characters`)
+        .max(NAME_MAX, `Name cannot exceed ${NAME_MAX} characters`)
         .trim(),
     email: z
         .string()
-        .email("Please provide a valid email")
+        .email("Please provide a valid email address")
         .toLowerCase()
         .trim(),
     username: z
         .string()
-        .min(3, "Username must be at least 3 characters")
-        .max(30, "Username cannot exceed 30 characters")
+        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
+        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
+        .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
         .trim()
         .optional(),
-    avatar: z.string().url("Avatar must be a valid URL").optional().nullable(),
-    provider: z.enum(["google", "github", "discord"]),
+    avatar: z.string().url("Avatar must be a valid URL").nullable().optional(),
+    provider: z.enum(["email", "google", "github", "facebook"], {
+        error: "Provider must be one of: email, google, github, facebook",
+    }),
     providerId: z.string().optional(),
 });
+
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+
+// ─── Update user ──────────────────────────────────────────────────────────────
 
 export const updateUserSchema = z.object({
     name: z
         .string()
-        .min(2, "Name must be at least 2 characters")
-        .max(50, "Name cannot exceed 50 characters")
+        .min(NAME_MIN, `Name must be at least ${NAME_MIN} characters`)
+        .max(NAME_MAX, `Name cannot exceed ${NAME_MAX} characters`)
         .trim()
         .optional(),
     username: z
         .string()
-        .min(3, "Username must be at least 3 characters")
-        .max(30, "Username cannot exceed 30 characters")
+        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
+        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
+        .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
         .trim()
         .optional(),
-    avatar: z.string().url("Avatar must be a valid URL").optional().nullable(),
-    status: z.enum(["online", "offline", "away", "dnd"]).optional(),
+    avatar: z.string().url("Avatar must be a valid URL").nullable().optional(),
+    status: z
+        .enum(["online", "offline", "away", "dnd"], {
+            error: "Status must be one of: online, offline, away, dnd",
+        })
+        .optional(),
     customStatus: z
         .string()
-        .max(128, "Status cannot exceed 128 characters")
+        .max(CUSTOM_STATUS_MAX, `Custom status cannot exceed ${CUSTOM_STATUS_MAX} characters`)
         .optional(),
     bio: z
         .string()
-        .max(190, "Bio cannot exceed 190 characters")
+        .max(BIO_MAX, `Bio cannot exceed ${BIO_MAX} characters`)
         .optional(),
 });
 
-// Friend Request Validations
-export const addFriendSchema = z.object({
-    friendId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid user ID"),
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+
+// ─── Friend request params ────────────────────────────────────────────────────
+
+export const friendIdSchema = z.object({
+    friendId: objectIdSchema.describe("MongoDB ObjectId of the target user"),
 });
 
-export const removeFriendSchema = z.object({
-    friendId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid user ID"),
-});
+export type FriendIdParam = z.infer<typeof friendIdSchema>;
 
-// Server Validations
-export const createServerSchema = z.object({
-    name: z
-        .string()
-        .min(2, "Server name must be at least 2 characters")
-        .max(100, "Server name cannot exceed 100 characters")
-        .trim(),
-    description: z
-        .string()
-        .max(500, "Description cannot exceed 500 characters")
-        .optional(),
-    icon: z.string().url("Icon must be a valid URL").optional().nullable(),
-});
-
-export const updateServerSchema = z.object({
-    name: z
-        .string()
-        .min(2, "Server name must be at least 2 characters")
-        .max(100, "Server name cannot exceed 100 characters")
-        .trim()
-        .optional(),
-    description: z
-        .string()
-        .max(500, "Description cannot exceed 500 characters")
-        .optional(),
-    icon: z.string().url("Icon must be a valid URL").optional().nullable(),
-});
-
-// Message Validations
-export const sendMessageSchema = z.object({
-    content: z
-        .string()
-        .min(1, "Message cannot be empty")
-        .max(2000, "Message cannot exceed 2000 characters")
-        .trim(),
-    roomId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid room ID"),
-    attachments: z.array(z.string().url()).optional(),
-});
-
-// Channel Validations
-export const createChannelSchema = z.object({
-    name: z
-        .string()
-        .min(1, "Channel name is required")
-        .max(100, "Channel name cannot exceed 100 characters")
-        .trim(),
-    type: z.enum(["text", "voice"]),
-    serverId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid server ID"),
-});
+// NOTE: createServerSchema, updateServerSchema, sendMessageSchema,
+// and createChannelSchema were duplicated here from their dedicated files.
+// Import them directly from server.validation, message.validation, and
+// channel.validation instead to avoid drift between the two definitions.

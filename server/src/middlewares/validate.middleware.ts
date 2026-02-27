@@ -1,133 +1,121 @@
-import { ZodError } from "zod";
-import { createApiError } from "../utils/ApiError.js";
-import { HTTP_STATUS } from "../constants/httpStatus.js";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { ZodSchema, ZodError, type ZodIssue } from "zod";
+import { ApiError } from "@/utils/ApiError";
+import { HTTP_STATUS } from "@/constants/httpStatus";
 
-//  * Format Zod validation errors into a clean API response structure
-//  * @param {ZodError} error - Zod error object
-//  * @returns {Array<{field: string, message: string}>}
-const formatZodError = (error) => {
-  // Check if error has the issues property (Zod uses 'issues' not 'errors')
-  const issues = error.issues || error.errors || [];
+// ─── Types
 
-  if (!Array.isArray(issues) || issues.length === 0) {
-    console.error("Unexpected Zod error structure:", error);
-    return [
-      {
-        field: "unknown",
-        message: error.message || "Validation error occurred",
-      },
-    ];
-  }
+export interface ValidationFieldError {
+  field: string;
+  message: string;
+}
 
-  return issues.map((issue) => ({
-    field:
-      issue.path && issue.path.length > 0 ? issue.path.join(".") : "unknown",
-    message: issue.message || "Validation error",
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Map Zod issues to the flat `{ field, message }[]` shape used by the API. */
+const formatZodError = (error: ZodError): ValidationFieldError[] =>
+  error.issues.map((issue: ZodIssue) => ({
+    field: issue.path.length > 0 ? issue.path.join(".") : "unknown",
+    message: issue.message,
   }));
-};
 
-//  * Validate request body using a Zod schema
-//  * - Parses and sanitizes req.body
-//  * - Replaces req.body with validated data
-//  * - Forwards Zod errors to global error handler
-export const validateBody = (schema) => (req, res, next) => {
+/** Shared Zod parsing logic — throws next(ApiError) on failure. */
+const parseWith = <T>(
+  schema: ZodSchema<T>,
+  data: unknown,
+  errorMessage: string,
+  next: NextFunction,
+): T | undefined => {
   try {
-    // Parse the body - this will throw if validation fails
-    const data = schema.parse(req.body ?? {});
-    req.body = data;
-    next();
-  } catch (error) {
-    // Handle Zod validation errors
-    if (error?.name === "ZodError" || error instanceof ZodError) {
-      const formattedErrors = formatZodError(error);
-      console.error("Zod Validation Failed:");
-      console.error("Formatted Errors:", formattedErrors);
-
-      return next(
-        createApiError(
+    return schema.parse(data ?? {});
+  } catch (err) {
+    if (err instanceof ZodError) {
+      next(
+        new ApiError(
           HTTP_STATUS.BAD_REQUEST,
-          "Validation failed",
-          formattedErrors,
+          errorMessage,
+          formatZodError(err),
         ),
       );
+      return undefined;
     }
-
-    // Handle other errors
-    console.error("Non-Zod error in validation:", error);
-    return next(error);
+    next(err);
+    return undefined;
   }
 };
 
-//  * Validate route params (req.params) using a Zod schema
-export const validateParams = (schema) => (req, res, next) => {
-  try {
-    const data = schema.parse(req.params ?? {});
-    req.params = data;
-    next();
-  } catch (error) {
-    if (error?.name === "ZodError" || error instanceof ZodError) {
-      const formattedErrors = formatZodError(error);
-      return next(
-        createApiError(
-          HTTP_STATUS.BAD_REQUEST,
-          "Invalid parameters",
-          formattedErrors,
-        ),
-      );
-    }
-    return next(error);
-  }
-};
+// ─── Middleware factories ─────────────────────────────────────────────────────
 
-//  * Validate query string parameters (req.query) using a Zod schema
-export const validateQuery = (schema) => (req, res, next) => {
-  try {
-    const data = schema.parse(req.query ?? {});
-    req.query = data;
-    next();
-  } catch (error) {
-    if (error?.name === "ZodError" || error instanceof ZodError) {
-      const formattedErrors = formatZodError(error);
-      return next(
-        createApiError(
-          HTTP_STATUS.BAD_REQUEST,
-          "Invalid query parameters",
-          formattedErrors,
-        ),
-      );
+/**
+ * Validate and replace `req.body` using a Zod schema.
+ * Strips unknown fields (Zod default) and enforces types.
+ */
+export const validateBody = <T>(schema: ZodSchema<T>): RequestHandler =>
+  (req: Request, _res: Response, next: NextFunction): void => {
+    const result = parseWith(schema, req.body, "Validation failed.", next);
+    if (result !== undefined) {
+      req.body = result as Record<string, unknown>;
+      next();
     }
-    return next(error);
-  }
-};
+  };
 
-//  * Combined validator for both body and params
-export const validate = (bodySchema, paramsSchema) => (req, res, next) => {
-  try {
+/**
+ * Validate `req.params` using a Zod schema.
+ * Useful for ensuring route params are the expected shape (e.g. valid UUIDs).
+ */
+export const validateParams = <T>(schema: ZodSchema<T>): RequestHandler =>
+  (req: Request, _res: Response, next: NextFunction): void => {
+    const result = parseWith(schema, req.params, "Invalid route parameters.", next);
+    if (result !== undefined) {
+      req.params = result as Record<string, string>;
+      next();
+    }
+  };
+
+/**
+ * Validate `req.query` using a Zod schema.
+ */
+export const validateQuery = <T>(schema: ZodSchema<T>): RequestHandler =>
+  (req: Request, _res: Response, next: NextFunction): void => {
+    const result = parseWith(
+      schema,
+      req.query,
+      "Invalid query parameters.",
+      next,
+    );
+    if (result !== undefined) {
+      req.query = result as Record<string, string>;
+      next();
+    }
+  };
+
+/**
+ * Combined validator for body + params in a single middleware.
+ * Both schemas are optional — pass `null` to skip either.
+ */
+export const validate = <B, P>(
+  bodySchema: ZodSchema<B> | null,
+  paramsSchema: ZodSchema<P> | null,
+): RequestHandler =>
+  (req: Request, _res: Response, next: NextFunction): void => {
     if (bodySchema) {
-      req.body = bodySchema.parse(req.body ?? {});
+      const body = parseWith(bodySchema, req.body, "Validation failed.", next);
+      if (body === undefined) return;
+      req.body = body as Record<string, unknown>;
     }
-    if (paramsSchema) {
-      req.params = paramsSchema.parse(req.params ?? {});
-    }
-    next();
-  } catch (error) {
-    if (error?.name === "ZodError" || error instanceof ZodError) {
-      const formattedErrors = formatZodError(error);
-      return next(
-        createApiError(
-          HTTP_STATUS.BAD_REQUEST,
-          "Validation failed",
-          formattedErrors,
-        ),
-      );
-    }
-    return next(error);
-  }
-};
 
-export default {
-  validateBody,
-  validateParams,
-  validateQuery,
-  validate,
-};
+    if (paramsSchema) {
+      const params = parseWith(
+        paramsSchema,
+        req.params,
+        "Invalid route parameters.",
+        next,
+      );
+      if (params === undefined) return;
+      req.params = params as Record<string, string>;
+    }
+
+    next();
+  };
+
+export default { validateBody, validateParams, validateQuery, validate };

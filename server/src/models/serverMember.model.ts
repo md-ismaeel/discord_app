@@ -1,62 +1,55 @@
-import mongoose from "mongoose";
+import mongoose, { Schema, type Model } from "mongoose";
+import type { IServerMember } from "../types/models.js";
 
-const serverMemberSchema = new mongoose.Schema(
+const serverMemberSchema = new Schema<IServerMember>(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: [true, "User is required"],
     },
     server: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "Server",
-      required: true,
+      required: [true, "Server is required"],
     },
-    // Basic hierarchy role
+    // Coarse hierarchy — for fast middleware gates (isAdmin, isModerator)
     role: {
       type: String,
-      enum: ["owner", "admin", "moderator", "member"],
+      enum: {
+        values: ["owner", "admin", "moderator", "member"] as const,
+        message: "{VALUE} is not a valid member role",
+      },
       default: "member",
     },
-    // Permission-based roles (links to Role model)
-    roles: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Role",
-      },
-    ],
-    // Server nickname (overrides display name inside this server)
+    // Fine-grained permission roles from the Role collection
+    roles: [{ type: Schema.Types.ObjectId, ref: "Role" }],
+    // Per-server display name — overrides user.name inside this server
     nickname: {
       type: String,
       default: null,
-      maxlength: 32,
       trim: true,
+      maxlength: [32, "Nickname cannot exceed 32 characters"],
     },
-    // Voice moderation states
-    isMuted: {
-      type: Boolean,
-      default: false, // Server-muted (cannot speak)
-    },
-    isDeafened: {
-      type: Boolean,
-      default: false, // Server-deafened (cannot hear)
-    },
-    joinedAt: {
-      type: Date,
-      default: Date.now,
-    },
+    // Voice moderation — managed by admins/moderators
+    isMuted: { type: Boolean, default: false },
+    isDeafened: { type: Boolean, default: false },
+    joinedAt: { type: Date, default: Date.now },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
-// Indexes
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+// Primary constraint — a user can only be a member of each server once
 serverMemberSchema.index({ user: 1, server: 1 }, { unique: true });
+// List all members of a server filtered by hierarchy role
 serverMemberSchema.index({ server: 1, role: 1 });
+// Member list sorted by join date
 serverMemberSchema.index({ server: 1, joinedAt: 1 });
 
-export const ServerMemberModel = mongoose.model(
-  "ServerMember",
-  serverMemberSchema,
-);
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const ServerMemberModel: Model<IServerMember> =
+  (mongoose.models["ServerMember"] as Model<IServerMember>) ??
+  mongoose.model<IServerMember>("ServerMember", serverMemberSchema);

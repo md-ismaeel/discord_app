@@ -1,21 +1,32 @@
 import mongoose from "mongoose";
-import { createApiError } from "./ApiError.js";
-import { HTTP_STATUS } from "../constants/httpStatus.js";
+import { ApiError } from "./ApiError.js";
 
-//  * Validate MongoDB ObjectId
-//  * Throws error if ID is missing or invalid
-export const validateObjectId = (id, fieldName = "ID") => {
-  // Check if ID is present
+// ─── Types 
+
+// Acceptable input types — strings come from req.params; ObjectIds from model refs
+type ObjectIdInput = string | mongoose.Types.ObjectId;
+
+// ─── Helpers
+
+/**
+ * Assert that `id` is a non-empty, valid MongoDB ObjectId.
+ * Throws `ApiError.badRequest` with a descriptive message if validation fails.
+ *
+ * @param id        - The value to validate (typically from req.params)
+ * @param fieldName - Human-readable field label used in the error message
+ * @returns The original `id` value, narrowed to `string | Types.ObjectId`
+ *
+ * @example
+ *   const userId = validateObjectId(req.params.userId, "userId");
+ *   const user = await UserModel.findById(userId);
+ */
+export const validateObjectId = (id: ObjectIdInput | undefined | null, fieldName = "ID"): ObjectIdInput => {
   if (!id) {
-    throw createApiError(HTTP_STATUS.BAD_REQUEST, `${fieldName} is required`);
+    throw ApiError.badRequest(`${fieldName} is required.`);
   }
 
-  // Check if ID is valid MongoDB ObjectId
   if (!mongoose.isValidObjectId(id)) {
-    throw createApiError(
-      HTTP_STATUS.BAD_REQUEST,
-      `Invalid mongoose ${fieldName} format`,
-    );
+    throw ApiError.badRequest(`${fieldName} is not a valid MongoDB ObjectId.`);
   }
 
   return id;

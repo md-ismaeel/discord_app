@@ -1,33 +1,39 @@
-import mongoose from "mongoose";
+import mongoose, { Schema, type Model } from "mongoose";
+import type { IFriendRequest } from "../types/models.js";
 
-const friendRequestSchema = new mongoose.Schema(
+const friendRequestSchema = new Schema<IFriendRequest>(
   {
     sender: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: [true, "Sender is required"],
     },
     receiver: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: [true, "Receiver is required"],
     },
     status: {
       type: String,
-      enum: ["pending", "accepted", "declined"],
+      enum: {
+        values: ["pending", "accepted", "declined"] as const,
+        message: "{VALUE} is not a valid friend request status",
+      },
       default: "pending",
     },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
-// Prevent duplicate friend requests
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+// Unique constraint prevents duplicate requests between the same two users
 friendRequestSchema.index({ sender: 1, receiver: 1 }, { unique: true });
+// Fetch all pending requests for a user (notification inbox)
 friendRequestSchema.index({ receiver: 1, status: 1 });
 
-export const FriendRequestModel = mongoose.model(
-  "FriendRequest",
-  friendRequestSchema,
-);
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const FriendRequestModel: Model<IFriendRequest> =
+  (mongoose.models["FriendRequest"] as Model<IFriendRequest>) ??
+  mongoose.model<IFriendRequest>("FriendRequest", friendRequestSchema);

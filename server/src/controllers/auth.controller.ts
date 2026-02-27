@@ -1,51 +1,53 @@
-import { asyncHandler } from "../utils/asyncHandler.ts";
-import { sendSuccess, sendCreated } from "../utils/response.ts";
-import { createApiError } from "../utils/ApiError.js";
-import { generateToken, verifyToken } from "../utils/jwt.ts";
-import { hashPassword, comparePassword } from "../utils/bcrypt.ts";
-import { ERROR_MESSAGES } from "../constants/errorMessages.ts";
-import { SUCCESS_MESSAGES } from "../constants/successMessages.ts";
-import { getEnv } from "../config/env.config.ts";
-import { UserModel } from "../models/user.model.ts";
-import { setTokenCookie } from "../utils/setTokenCookie.ts";
-import { blacklistToken, isTokenBlacklisted } from "../utils/redis.ts";
-import { HTTP_STATUS } from "../constants/httpStatus.ts";
-import { validateObjectId } from "../utils/validateObjId.ts";
+import type { Request, Response, CookieOptions } from "express";
+import type { Types } from "mongoose";
+import { asyncHandler } from "@/utils/asyncHandler";
+import { sendSuccess, sendCreated } from "@/utils/response";
+import { ApiError } from "@/utils/ApiError";
+import { generateToken, verifyToken } from "@/utils/jwt";
+import { hashPassword, comparePassword } from "@/utils/bcrypt";
+import { ERROR_MESSAGES } from "@/constants/errorMessages";
+import { SUCCESS_MESSAGES } from "@/constants/successMessages";
+import { getEnv } from "@/config/env.config";
+import { UserModel } from "@/models/user.model";
+import { setTokenCookie, clearTokenCookie } from "@/utils/setTokenCookie";
+import { blacklistToken, isTokenBlacklisted } from "@/utils/redis";
+import { HTTP_STATUS } from "@/constants/httpStatus";
+import { validateObjectId } from "@/utils/validateObjId";
 import {
   recordLoginAttempt,
   clearLoginAttempts,
   recordRegisterAttempt,
   clearRegisterAttempts,
-} from "../middlewares/rateLimit.middleware.js";
+} from "@/middlewares/rateLimit.middleware";
 
-//    Register new user with email/password
-export const register = asyncHandler(async (req, res) => {
-  const { name, email, password, username } = req.body;
-  const clientIp = req.clientIp || req.ip;
+// ─── Register ─────────────────────────────────────────────────────────────────
 
-  // Check if user already exists
+export const register = asyncHandler(async (req: Request, res: Response) => {
+  const { name, email, password, username } = req.body as {
+    name: string;
+    email: string;
+    password: string;
+    username?: string;
+  };
+  // FIX: req.clientIp may not exist on base Request — fall back to req.ip ?? ""
+  const clientIp: string = (req as Request & { clientIp?: string }).clientIp ?? req.ip ?? "";
+
   const existingUser = await UserModel.findOne({ email });
   if (existingUser) {
     await recordRegisterAttempt(clientIp);
-    throw createApiError(
-      HTTP_STATUS.CONFLICT,
-      ERROR_MESSAGES.USER_ALREADY_EXISTS,
-    );
+    throw ApiError.conflict(ERROR_MESSAGES.USER_ALREADY_EXISTS);
   }
 
-  // Check if username is taken (if provided)
   if (username) {
     const usernameTaken = await UserModel.findOne({ username });
     if (usernameTaken) {
       await recordRegisterAttempt(clientIp);
-      throw createApiError(HTTP_STATUS.CONFLICT, ERROR_MESSAGES.USERNAME_TAKEN);
+      throw ApiError.conflict(ERROR_MESSAGES.USERNAME_TAKEN);
     }
   }
 
-  // Hash password in controller
   const hashedPassword = await hashPassword(password);
 
-  // Create user
   const user = await UserModel.create({
     name,
     email,
@@ -56,14 +58,13 @@ export const register = asyncHandler(async (req, res) => {
     isEmailVerified: false,
   });
 
-  // Get user without password
+  // FIX: findById can return null — assert non-null after confirming creation succeeded
   const userResponse = await UserModel.findById(user._id).select("-password");
+  if (!userResponse) throw ApiError.internal("Failed to retrieve created user.");
 
-  // Generate token
   const token = generateToken(userResponse._id);
   setTokenCookie(res, token);
 
-  // Clear registration attempts on success
   await clearRegisterAttempts(clientIp);
 
   return sendCreated(
@@ -73,59 +74,54 @@ export const register = asyncHandler(async (req, res) => {
   );
 });
 
-//    Login user with email/password
-export const login = asyncHandler(async (req, res) => {
-  const { email, username, password } = req.body;
-  const clientIp = req.clientIp || req.ip;
+// ─── Login ────────────────────────────────────────────────────────────────────
 
-  // Build query - user can login with either email or username
+export const login = asyncHandler(async (req: Request, res: Response) => {
+  const { email, username, password } = req.body as {
+    email?: string;
+    username?: string;
+    password: string;
+  };
+  const clientIp: string = (req as Request & { clientIp?: string }).clientIp ?? req.ip ?? "";
+
   const query = email ? { email } : { username };
-
-  // Find user and explicitly select password
   const user = await UserModel.findOne(query).select("+password");
 
   if (!user) {
     await recordLoginAttempt(clientIp);
-    throw createApiError(
-      HTTP_STATUS.UNAUTHORIZED,
-      ERROR_MESSAGES.INVALID_CREDENTIALS,
-    );
+    throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
   }
 
-  // Check if user registered with email (not OAuth)
   if (user.provider !== "email") {
     await recordLoginAttempt(clientIp);
-    throw createApiError(
-      HTTP_STATUS.BAD_REQUEST,
-      `This account is registered with ${user.provider}. Please login using ${user.provider}.`,
+    throw ApiError.badRequest(
+      `This account uses ${user.provider} login. Please sign in with ${user.provider}.`,
     );
   }
 
-  // Verify password using utility function
-  const isPasswordValid = await comparePassword(password, user.password);
+  // FIX: user.password may be undefined (not selected by default) — guard it
+  if (!user.password) {
+    await recordLoginAttempt(clientIp);
+    throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
+  }
 
+  const isPasswordValid = await comparePassword(password, user.password);
   if (!isPasswordValid) {
     await recordLoginAttempt(clientIp);
-    throw createApiError(
-      HTTP_STATUS.UNAUTHORIZED,
-      ERROR_MESSAGES.INVALID_CREDENTIALS,
-    );
+    throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
   }
 
-  // Update status to online and last seen
   await UserModel.findByIdAndUpdate(user._id, {
     status: "online",
     lastSeen: new Date(),
   });
 
-  // Generate token
   const token = generateToken(user._id);
   setTokenCookie(res, token);
 
-  // Return user without password
   const userResponse = await UserModel.findById(user._id).select("-password");
+  if (!userResponse) throw ApiError.internal("Failed to retrieve user.");
 
-  // Clear login attempts on success
   await clearLoginAttempts(clientIp);
 
   return sendSuccess(
@@ -135,110 +131,108 @@ export const login = asyncHandler(async (req, res) => {
   );
 });
 
-//    OAuth callback handler (Google/GitHub/Facebook)
-export const oauthCallback = asyncHandler(async (req, res) => {
-  if (!req.user) {
-    throw createApiError(HTTP_STATUS.UNAUTHORIZED, ERROR_MESSAGES.UNAUTHORIZED);
+// ─── OAuth callback ───────────────────────────────────────────────────────────
+
+export const oauthCallback = asyncHandler(async (req: Request, res: Response) => {
+  // req.user is populated by Passport after OAuth flow
+  const passportUser = req.user as { _id: Types.ObjectId } | undefined;
+  if (!passportUser) {
+    throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
   }
 
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(passportUser._id);
 
-  // Update status to online and last seen
   await UserModel.findByIdAndUpdate(userId, {
     status: "online",
     lastSeen: new Date(),
   });
 
-  // Generate token
   const token = generateToken(userId);
   setTokenCookie(res, token);
 
-  // Redirect to frontend
   const clientUrl = getEnv("CLIENT_URL");
+  // Token in query param — acceptable for OAuth redirect, but note it appears in logs.
   res.redirect(`${clientUrl}/auth/success?token=${token}`);
 });
 
-//    Logout user
-export const logout = asyncHandler(async (req, res) => {
-  // Get token from cookie or header
-  const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+// ─── Logout ───────────────────────────────────────────────────────────────────
 
-  // Blacklist token (7 days = 604800 seconds)
+export const logout = asyncHandler(async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  const token: string | undefined =
+    req.cookies?.token ??
+    (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined);
+
   if (token) {
-    await blacklistToken(token, 604800);
+    await blacklistToken(token, 604_800); // 7 days
   }
 
-  const userId = validateObjectId(req.user._id);
+  // FIX: req.user typed as unknown on base Request — cast via intersection
+  const userId = validateObjectId(
+    (req as Request & { user?: { _id: Types.ObjectId } }).user?._id,
+  );
 
-  // Update user status to offline
   await UserModel.findByIdAndUpdate(userId, {
     status: "offline",
     lastSeen: new Date(),
   });
 
-  // Clear cookie
-  res.clearCookie("token", {
+  // FIX: sameSite must be typed as CookieOptions["sameSite"], not a plain string
+  const isProduction = getEnv("NODE_ENV") === "production";
+  const cookieOptions: CookieOptions = {
     httpOnly: true,
-    secure: getEnv("NODE_ENV") === "production",
-    sameSite: getEnv("NODE_ENV") === "production" ? "strict" : "lax",
-  });
+    secure: isProduction,
+    sameSite: isProduction ? "strict" : "lax",
+  };
+  res.clearCookie("token", cookieOptions);
 
   return sendSuccess(res, null, SUCCESS_MESSAGES.LOGOUT_SUCCESS);
 });
 
-//    Get authentication status
-export const getAuthStatus = asyncHandler(async (req, res) => {
-  if (req.user) {
+// ─── Auth status ──────────────────────────────────────────────────────────────
+
+export const getAuthStatus = asyncHandler(async (req: Request, res: Response) => {
+  const user = (req as Request & { user?: unknown }).user;
+
+  if (user) {
     return sendSuccess(
       res,
-      { isAuthenticated: true, user: req.user },
+      { isAuthenticated: true, user },
       SUCCESS_MESSAGES.AUTH_STATUS_SUCCESS,
     );
   }
 
-  return sendSuccess(res, {
-    isAuthenticated: false,
-    user: null,
-  });
+  return sendSuccess(res, { isAuthenticated: false, user: null });
 });
 
-//    Refresh access token
-export const refreshToken = asyncHandler(async (req, res) => {
-  const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
+// ─── Refresh token ────────────────────────────────────────────────────────────
+// FIX: original did `if (!decoded)` but our updated verifyToken THROWS on
+// failure (never returns null). The null-check is now dead code — removed.
+// The throw from verifyToken propagates through asyncHandler automatically.
 
-  if (!refreshToken) {
-    throw createApiError(HTTP_STATUS.UNAUTHORIZED, "Refresh token required");
+export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
+  const token: string | undefined =
+    req.cookies?.refreshToken ?? req.body?.refreshToken;
+
+  if (!token) {
+    throw ApiError.unauthorized("Refresh token is required.");
   }
 
-  // Verify refresh token
-  const decoded = verifyToken(refreshToken);
+  // verifyToken throws ApiError.unauthorized on invalid/expired tokens
+  const decoded = verifyToken(token);
 
-  if (!decoded) {
-    throw createApiError(HTTP_STATUS.UNAUTHORIZED, "Invalid refresh token");
-  }
-
-  // Check if token is blacklisted
-  const isBlacklisted = await isTokenBlacklisted(refreshToken);
+  const isBlacklisted = await isTokenBlacklisted(token);
   if (isBlacklisted) {
-    throw createApiError(
-      HTTP_STATUS.UNAUTHORIZED,
-      "Refresh token has been invalidated",
-    );
+    throw ApiError.unauthorized("Refresh token has been invalidated.");
   }
 
-  // Get user - use decoded.userId (matching what we put in generateToken)
   const user = await UserModel.findById(decoded.userId);
-
   if (!user) {
-    throw createApiError(
-      HTTP_STATUS.UNAUTHORIZED,
-      ERROR_MESSAGES.USER_NOT_FOUND,
-    );
+    throw ApiError.unauthorized(ERROR_MESSAGES.USER_NOT_FOUND);
   }
 
-  // Generate new access token
   const newToken = generateToken(user._id);
   setTokenCookie(res, newToken);
 
-  return sendSuccess(res, { token: newToken }, "Token refreshed successfully");
+  return sendSuccess(res, { token: newToken }, "Token refreshed successfully.");
 });

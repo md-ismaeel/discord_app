@@ -1,156 +1,161 @@
+import type { Request, Response } from "express";
+import type { Types } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { MessageModel } from "../models/message.model.js";
 import { ChannelModel } from "../models/channel.model.js";
 import { ServerMemberModel } from "../models/serverMember.model.js";
 import { pubClient } from "../config/redis.config.js";
-import { emitToChannel } from "../socket/socketHandler.js";
+import { emitToChannel, emitToUser } from "../socket/socketHandler.js";
+import { validateObjectId } from "../utils/validateObjId.js";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AuthReq extends Request {
+  user: { _id: Types.ObjectId };
+}
+
+// ─── Cache helpers ────────────────────────────────────────────────────────────
 
 const CACHE_TTL = {
-  MESSAGES: 300, // 5 minutes
-  MESSAGE: 600, // 10 minutes
-  PINNED: 900, // 15 minutes
-};
+  MESSAGES: 300,
+  MESSAGE: 600,
+  PINNED: 900,
+} as const;
 
 const getCacheKey = {
-  channelMessages: (channelId, page, limit) =>
+  channelMessages: (channelId: string, page: number, limit: number): string =>
     `channel:${channelId}:messages:${page}:${limit}`,
-  message: (messageId) => `message:${messageId}`,
-  pinnedMessages: (channelId) => `channel:${channelId}:pinned`,
+  message: (messageId: string): string => `message:${messageId}`,
+  pinnedMessages: (channelId: string): string => `channel:${channelId}:pinned`,
 };
 
-const invalidateMessageCache = async (channelId, messageId = null) => {
-  // Delete all paginated message caches for this channel
-  const messageKeys = await pubClient.keys(`channel:${channelId}:messages:*`);
-  const keysToDelete = [...messageKeys, getCacheKey.pinnedMessages(channelId)];
-
-  if (messageId) {
-    keysToDelete.push(getCacheKey.message(messageId));
-  }
-
-  if (keysToDelete.length > 0) {
-    await pubClient.del(...keysToDelete);
-  }
+const invalidateMessageCache = async (
+  channelId: string,
+  messageId: string | null = null,
+): Promise<void> => {
+  const keys = await pubClient.keys(`channel:${channelId}:messages:*`);
+  keys.push(getCacheKey.pinnedMessages(channelId));
+  if (messageId) keys.push(getCacheKey.message(messageId));
+  if (keys.length > 0) await pubClient.del(...keys);
 };
 
-// Helper to check member access
-const checkChannelAccess = async (channelId, userId) => {
+// ─── Channel access helper ────────────────────────────────────────────────────
+
+const checkChannelAccess = async (channelId: string, userId: string) => {
   const channel = await ChannelModel.findById(channelId).lean();
-
-  if (!channel) {
-    throw createApiError(404, "Channel not found");
-  }
+  if (!channel) throw ApiError.notFound("Channel not found.");
 
   const membership = await ServerMemberModel.findOne({
     server: channel.server,
     user: userId,
   });
+  if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
-  if (!membership) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-  }
-
-  // Check private channel access
   if (channel.isPrivate && !["owner", "admin"].includes(membership.role)) {
     if (
       channel.allowedRoles.length > 0 &&
-      !channel.allowedRoles.some((roleId) => membership.roles?.includes(roleId))
+      !channel.allowedRoles.some((roleId) =>
+        membership.roles?.some((r) => r.toString() === roleId.toString()),
+      )
     ) {
-      throw createApiError(
-        403,
-        "You don't have access to this private channel",
-      );
+      throw ApiError.forbidden("You don't have access to this private channel.");
     }
   }
 
   return { channel, membership };
 };
 
-//    Create a new message in a channel
-export const createMessage = asyncHandler(async (req, res) => {
+// ─── Create message ───────────────────────────────────────────────────────────
+
+export const createMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { channelId } = req.params;
-  const { content, attachments, mentions, replyTo } = req.body;
+  const { content, attachments, mentions, replyTo } = req.body as {
+    content: string;
+    attachments?: unknown[];
+    mentions?: string[];
+    replyTo?: string;
+  };
   const userId = validateObjectId(req.user._id);
 
-  // Check access
   const { channel } = await checkChannelAccess(channelId, userId);
 
-  // Create message
   const message = await MessageModel.create({
     content,
     author: userId,
     channel: channelId,
     server: channel.server,
-    attachments: attachments || [],
-    mentions: mentions || [],
-    replyTo: replyTo || null,
+    attachments: attachments ?? [],
+    mentions: mentions ?? [],
+    replyTo: replyTo ?? null,
   });
 
-  // Populate author details
-  const populatedMessage = await MessageModel.findById(message._id)
+  const populated = await MessageModel.findById(message._id)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .lean();
 
-  // Invalidate cache
   await invalidateMessageCache(channelId);
 
-  // Emit socket event to channel
   emitToChannel(channelId, "message:created", {
-    message: populatedMessage,
+    message: populated,
     channelId,
     timestamp: new Date(),
   });
 
-  // Notify mentioned users
+  // FIX: original used emitToUser without importing it — added to import above
   if (mentions && mentions.length > 0) {
     mentions.forEach((mentionedUserId) => {
-      emitToUser(mentionedUserId.toString(), "message:mentioned", {
-        message: populatedMessage,
+      emitToUser(mentionedUserId, "message:mentioned", {
+        message: populated,
         channelId,
         timestamp: new Date(),
       });
     });
   }
 
-  sendCreated(res, populatedMessage, "Message sent successfully");
+  sendCreated(res, populated, "Message sent successfully.");
 });
 
-//    Get messages from a channel (paginated)
-export const getChannelMessages = asyncHandler(async (req, res) => {
+// ─── Get channel messages ─────────────────────────────────────────────────────
+
+export const getChannelMessages = asyncHandler(async (req: AuthReq, res: Response) => {
   const { channelId } = req.params;
-  const { page = 1, limit = 50, before } = req.query;
+  // FIX: query params are strings — parse explicitly
+  const page = parseInt((req.query.page as string) ?? "1", 10);
+  const limit = parseInt((req.query.limit as string) ?? "50", 10);
+  const before = req.query.before as string | undefined;
   const userId = validateObjectId(req.user._id);
 
-  // Check access
   await checkChannelAccess(channelId, userId);
 
   const cacheKey = getCacheKey.channelMessages(channelId, page, limit);
 
-  // Try cache first (only if not using 'before' cursor)
   if (!before) {
     const cached = await pubClient.get(cacheKey);
-    if (cached) {
-      return sendSuccess(res, JSON.parse(cached));
-    }
+    if (cached) return sendSuccess(res, JSON.parse(cached));
   }
 
   const skip = (page - 1) * limit;
-  const query = { channel: channelId };
 
-  // If 'before' cursor is provided, get messages before that message
+  // FIX: typed query object instead of dynamic property assignment
+  interface MsgQuery {
+    channel: string;
+    createdAt?: { $lt: Date };
+  }
+
+  const query: MsgQuery = { channel: channelId };
+
   if (before) {
     const beforeMessage = await MessageModel.findById(before);
-    if (beforeMessage) {
-      query.createdAt = { $lt: beforeMessage.createdAt };
-    }
+    if (beforeMessage) query.createdAt = { $lt: beforeMessage.createdAt as Date };
   }
 
   const messages = await MessageModel.find(query)
     .sort({ createdAt: -1 })
-    .limit(parseInt(limit))
+    .limit(limit)
     .skip(skip)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
@@ -160,17 +165,16 @@ export const getChannelMessages = asyncHandler(async (req, res) => {
   const total = await MessageModel.countDocuments({ channel: channelId });
 
   const result = {
-    messages: messages.reverse(), // Reverse to show oldest first
+    messages: messages.reverse(),
     pagination: {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page,
+      limit,
       total,
       pages: Math.ceil(total / limit),
       hasMore: skip + messages.length < total,
     },
   };
 
-  // Cache the result (only if not using cursor)
   if (!before) {
     await pubClient.setex(cacheKey, CACHE_TTL.MESSAGES, JSON.stringify(result));
   }
@@ -178,17 +182,16 @@ export const getChannelMessages = asyncHandler(async (req, res) => {
   sendSuccess(res, result);
 });
 
-//    Get a single message by ID
-export const getMessage = asyncHandler(async (req, res) => {
+// ─── Get single message ───────────────────────────────────────────────────────
+
+export const getMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
   const userId = validateObjectId(req.user._id);
   const cacheKey = getCacheKey.message(messageId);
 
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
   if (cached) {
     const message = JSON.parse(cached);
-    // Verify access
     await checkChannelAccess(message.channel.toString(), userId);
     return sendSuccess(res, message);
   }
@@ -199,97 +202,71 @@ export const getMessage = asyncHandler(async (req, res) => {
     .populate("mentions", "username avatar")
     .lean();
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  // Check access
   await checkChannelAccess(message.channel.toString(), userId);
-
-  // Cache the result
   await pubClient.setex(cacheKey, CACHE_TTL.MESSAGE, JSON.stringify(message));
 
   sendSuccess(res, message);
 });
 
-//    Update/Edit a message
-export const updateMessage = asyncHandler(async (req, res) => {
+// ─── Update message ───────────────────────────────────────────────────────────
+
+export const updateMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
-  const { content } = req.body;
+  const { content } = req.body as { content: string };
   const userId = validateObjectId(req.user._id);
 
   const message = await MessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check if user is the author
   if (message.author.toString() !== userId) {
-    // Check if user is admin
-    const { membership } = await checkChannelAccess(
-      message.channel.toString(),
-      userId,
-    );
+    const { membership } = await checkChannelAccess(message.channel.toString(), userId);
     if (!["owner", "admin"].includes(membership.role)) {
-      throw createApiError(403, "You can only edit your own messages");
+      throw ApiError.forbidden("You can only edit your own messages.");
     }
   }
 
   message.content = content;
   message.isEdited = true;
   message.editedAt = new Date();
-
   await message.save();
 
-  const updatedMessage = await MessageModel.findById(messageId)
+  const updated = await MessageModel.findById(messageId)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .lean();
 
-  // Invalidate cache
   await invalidateMessageCache(message.channel.toString(), messageId);
 
-  // Emit socket event
   emitToChannel(message.channel.toString(), "message:updated", {
-    message: updatedMessage,
+    message: updated,
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updatedMessage, "Message updated successfully");
+  sendSuccess(res, updated, "Message updated successfully.");
 });
 
-//    Delete a message
-export const deleteMessage = asyncHandler(async (req, res) => {
+// ─── Delete message ───────────────────────────────────────────────────────────
+
+export const deleteMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const message = await MessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check if user is the author
   if (message.author.toString() !== userId) {
-    // Check if user is admin
-    const { membership } = await checkChannelAccess(
-      message.channel.toString(),
-      userId,
-    );
+    const { membership } = await checkChannelAccess(message.channel.toString(), userId);
     if (!["owner", "admin", "moderator"].includes(membership.role)) {
-      throw createApiError(403, "You can only delete your own messages");
+      throw ApiError.forbidden("You can only delete your own messages.");
     }
   }
 
   const channelId = message.channel.toString();
-
   await message.deleteOne();
-
-  // Invalidate cache
   await invalidateMessageCache(channelId, messageId);
 
-  // Emit socket event
   emitToChannel(channelId, "message:deleted", {
     messageId,
     channelId,
@@ -297,42 +274,34 @@ export const deleteMessage = asyncHandler(async (req, res) => {
     timestamp: new Date(),
   });
 
-  sendSuccess(res, null, "Message deleted successfully");
+  sendSuccess(res, null, "Message deleted successfully.");
 });
 
-//    Pin/Unpin a message
-export const togglePinMessage = asyncHandler(async (req, res) => {
+// ─── Toggle pin ───────────────────────────────────────────────────────────────
+
+export const togglePinMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const message = await MessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check if user has permission
-  const { membership } = await checkChannelAccess(
-    message.channel.toString(),
-    userId,
-  );
+  const { membership } = await checkChannelAccess(message.channel.toString(), userId);
   if (!["owner", "admin", "moderator"].includes(membership.role)) {
-    throw createApiError(403, "Only admins and moderators can pin messages");
+    throw ApiError.forbidden("Only admins and moderators can pin messages.");
   }
 
   message.isPinned = !message.isPinned;
   await message.save();
 
-  const updatedMessage = await MessageModel.findById(messageId)
+  const updated = await MessageModel.findById(messageId)
     .populate("author", "username avatar status")
     .lean();
 
-  // Invalidate cache
   await invalidateMessageCache(message.channel.toString(), messageId);
 
-  // Emit socket event
   emitToChannel(message.channel.toString(), "message:pinned", {
-    message: updatedMessage,
+    message: updated,
     isPinned: message.isPinned,
     pinnedBy: userId,
     timestamp: new Date(),
@@ -340,88 +309,65 @@ export const togglePinMessage = asyncHandler(async (req, res) => {
 
   sendSuccess(
     res,
-    updatedMessage,
-    `Message ${message.isPinned ? "pinned" : "unpinned"} successfully`,
+    updated,
+    `Message ${message.isPinned ? "pinned" : "unpinned"} successfully.`,
   );
 });
 
-//    Get pinned messages in a channel
-export const getPinnedMessages = asyncHandler(async (req, res) => {
+// ─── Get pinned messages ──────────────────────────────────────────────────────
+
+export const getPinnedMessages = asyncHandler(async (req: AuthReq, res: Response) => {
   const { channelId } = req.params;
   const userId = validateObjectId(req.user._id);
 
-  // Check access
   await checkChannelAccess(channelId, userId);
 
   const cacheKey = getCacheKey.pinnedMessages(channelId);
-
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
-  if (cached) {
-    return sendSuccess(res, JSON.parse(cached));
-  }
+  if (cached) return sendSuccess(res, JSON.parse(cached));
 
-  const pinnedMessages = await MessageModel.find({
-    channel: channelId,
-    isPinned: true,
-  })
+  const pinned = await MessageModel.find({ channel: channelId, isPinned: true })
     .sort({ createdAt: -1 })
     .populate("author", "username avatar status")
     .lean();
 
-  // Cache the result
-  await pubClient.setex(
-    cacheKey,
-    CACHE_TTL.PINNED,
-    JSON.stringify(pinnedMessages),
-  );
+  await pubClient.setex(cacheKey, CACHE_TTL.PINNED, JSON.stringify(pinned));
 
-  sendSuccess(res, pinnedMessages);
+  sendSuccess(res, pinned);
 });
 
-//    Add reaction to a message
-export const addReaction = asyncHandler(async (req, res) => {
+// ─── Add reaction ─────────────────────────────────────────────────────────────
+
+export const addReaction = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
-  const { emoji } = req.body;
+  const { emoji } = req.body as { emoji: string };
   const userId = validateObjectId(req.user._id);
 
   const message = await MessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check access
   await checkChannelAccess(message.channel.toString(), userId);
 
-  // Find existing reaction with this emoji
-  const existingReaction = message.reactions.find((r) => r.emoji === emoji);
-
-  if (existingReaction) {
-    // Check if user already reacted
-    if (existingReaction.users.includes(userId)) {
-      throw createApiError(400, "You already reacted with this emoji");
+  const existing = message.reactions.find((r) => r.emoji === emoji);
+  if (existing) {
+    // FIX: original used Array.includes on ObjectId array — must compare via .toString()
+    if (existing.users.some((id) => id.toString() === userId)) {
+      throw ApiError.badRequest("You already reacted with this emoji.");
     }
-    existingReaction.users.push(userId);
+    existing.users.push(userId as unknown as Types.ObjectId);
   } else {
-    // Create new reaction
-    message.reactions.push({
-      emoji,
-      users: [userId],
-    });
+    message.reactions.push({ emoji, users: [userId as unknown as Types.ObjectId] });
   }
 
   await message.save();
 
-  const updatedMessage = await MessageModel.findById(messageId)
+  const updated = await MessageModel.findById(messageId)
     .populate("author", "username avatar status")
     .populate("reactions.users", "username avatar")
     .lean();
 
-  // Invalidate cache
   await invalidateMessageCache(message.channel.toString(), messageId);
 
-  // Emit socket event
   emitToChannel(message.channel.toString(), "message:reactionAdded", {
     messageId,
     emoji,
@@ -429,48 +375,38 @@ export const addReaction = asyncHandler(async (req, res) => {
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updatedMessage, "Reaction added successfully");
+  sendSuccess(res, updated, "Reaction added successfully.");
 });
 
-//    Remove reaction from a message
-export const removeReaction = asyncHandler(async (req, res) => {
+// ─── Remove reaction ──────────────────────────────────────────────────────────
+
+export const removeReaction = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId, emoji } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const message = await MessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check access
   await checkChannelAccess(message.channel.toString(), userId);
 
-  // Find reaction
   const reaction = message.reactions.find((r) => r.emoji === emoji);
+  if (!reaction) throw ApiError.notFound("Reaction not found.");
 
-  if (!reaction) {
-    throw createApiError(404, "Reaction not found");
-  }
-
-  // Remove user from reaction
+  // FIX: same ObjectId string comparison fix as addReaction
   reaction.users = reaction.users.filter((id) => id.toString() !== userId);
 
-  // If no users left, remove the reaction entirely
   if (reaction.users.length === 0) {
     message.reactions = message.reactions.filter((r) => r.emoji !== emoji);
   }
 
   await message.save();
 
-  const updatedMessage = await MessageModel.findById(messageId)
+  const updated = await MessageModel.findById(messageId)
     .populate("author", "username avatar status")
     .lean();
 
-  // Invalidate cache
   await invalidateMessageCache(message.channel.toString(), messageId);
 
-  // Emit socket event
   emitToChannel(message.channel.toString(), "message:reactionRemoved", {
     messageId,
     emoji,
@@ -478,7 +414,7 @@ export const removeReaction = asyncHandler(async (req, res) => {
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updatedMessage, "Reaction removed successfully");
+  sendSuccess(res, updated, "Reaction removed successfully.");
 });
 
 export default {

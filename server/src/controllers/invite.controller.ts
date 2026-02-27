@@ -1,5 +1,7 @@
+import type { Request, Response } from "express";
+import type { Types } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { InviteModel } from "../models/invite.model.js";
@@ -12,130 +14,108 @@ import crypto from "crypto";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 import { validateObjectId } from "../utils/validateObjId.js";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AuthReq extends Request {
+  user: { _id: Types.ObjectId };
+}
+
+// ─── Cache helpers ────────────────────────────────────────────────────────────
+
 const CACHE_TTL = {
-  INVITE: 1800, // 30 minutes
-  SERVER_INVITES: 600, // 10 minutes
-};
+  INVITE: 1800,
+  SERVER_INVITES: 600,
+} as const;
 
 const getCacheKey = {
-  invite: (code) => `invite:${code}`,
-  serverInvites: (serverId) => `server:${serverId}:invites`,
+  invite: (code: string): string => `invite:${code}`,
+  serverInvites: (serverId: string): string => `server:${serverId}:invites`,
 };
 
-const invalidateInviteCache = async (serverId, code = null) => {
-  const keys = [getCacheKey.serverInvites(serverId), `server:${serverId}`];
-
-  if (code) {
-    keys.push(getCacheKey.invite(code));
-  }
-
+const invalidateInviteCache = async (
+  serverId: string,
+  code: string | null = null,
+): Promise<void> => {
+  const keys: string[] = [getCacheKey.serverInvites(serverId), `server:${serverId}`];
+  if (code) keys.push(getCacheKey.invite(code));
   await pubClient.del(...keys);
 };
 
-// Generate unique invite code
-const generateInviteCode = () => {
-  return crypto.randomBytes(4).toString("hex").toUpperCase();
-};
+// ─── Generate invite code ─────────────────────────────────────────────────────
 
-// Helper to check member permissions
-const checkMemberPermission = async (serverId, userId) => {
-  const membership = await ServerMemberModel.findOne({
-    server: serverId,
-    user: userId,
-  });
+const generateInviteCode = (): string =>
+  crypto.randomBytes(4).toString("hex").toUpperCase();
 
-  if (!membership) {
-    throw createApiError(
-      HTTP_STATUS.FORBIDDEN,
-      ERROR_MESSAGES.NOT_SERVER_MEMBER,
-    );
-  }
+// ─── Permission helper ────────────────────────────────────────────────────────
 
+const checkMemberPermission = async (serverId: string, userId: string) => {
+  const membership = await ServerMemberModel.findOne({ server: serverId, user: userId });
+  if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
   return membership;
 };
 
-//    Create server invite
-export const createInvite = asyncHandler(async (req, res) => {
+// ─── Create invite ────────────────────────────────────────────────────────────
+
+export const createInvite = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
-  const { maxUses, expiresIn } = req.body; // expiresIn in hours
+  const { maxUses, expiresIn } = req.body as {
+    maxUses?: number;
+    expiresIn?: number | string; // hours
+  };
   const userId = validateObjectId(req.user._id);
 
-  // Verify server exists
   const server = await ServerModel.findById(serverId);
-  if (!server) {
-    throw createApiError(
-      HTTP_STATUS.NOT_FOUND,
-      ERROR_MESSAGES.SERVER_NOT_FOUND,
-    );
-  }
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  // Check if user is a member
   await checkMemberPermission(serverId, userId);
 
-  // TODO: Check if user has createInvite permission via Role model
-  // For now, all members can create invites
-
-  // Generate unique code
-  let code;
-  let isUnique = false;
-  while (!isUnique) {
+  // Generate unique code (collision-resistant loop)
+  let code: string;
+  do {
     code = generateInviteCode();
-    const existing = await InviteModel.findOne({ code });
-    if (!existing) {
-      isUnique = true;
-    }
-  }
+  } while (await InviteModel.exists({ code }));
 
-  // Calculate expiration
-  let expiresAt = null;
+  let expiresAt: Date | null = null;
   if (expiresIn) {
     expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + parseInt(expiresIn));
+    expiresAt.setHours(expiresAt.getHours() + parseInt(String(expiresIn), 10));
   }
 
-  // Create invite
   const invite = await InviteModel.create({
     code,
     server: serverId,
     inviter: userId,
-    maxUses: maxUses || null,
+    maxUses: maxUses ?? null,
     expiresAt,
   });
 
-  // Add to server's invites array
-  await ServerModel.findByIdAndUpdate(serverId, {
-    $push: { invites: invite._id },
-  });
+  await ServerModel.findByIdAndUpdate(serverId, { $push: { invites: invite._id } });
 
-  const populatedInvite = await InviteModel.findById(invite._id)
+  const populated = await InviteModel.findById(invite._id)
     .populate("server", "name icon")
     .populate("inviter", "username avatar")
     .lean();
 
-  // Invalidate cache
   await invalidateInviteCache(serverId, code);
 
-  sendCreated(res, populatedInvite, "Invite created successfully");
+  sendCreated(res, populated, "Invite created successfully.");
 });
 
-//    Get invite details by code
-export const getInvite = asyncHandler(async (req, res) => {
+// ─── Get invite by code ───────────────────────────────────────────────────────
+
+export const getInvite = asyncHandler(async (req: Request, res: Response) => {
   const { code } = req.params;
   const cacheKey = getCacheKey.invite(code);
 
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
   if (cached) {
     const invite = JSON.parse(cached);
-
-    // Check if expired or max uses reached
     if (invite.expiresAt && new Date(invite.expiresAt) < new Date()) {
-      throw createApiError(410, "Invite has expired");
+      throw ApiError.gone("Invite has expired.");
     }
     if (invite.maxUses && invite.uses >= invite.maxUses) {
-      throw createApiError(410, "Invite has reached maximum uses");
+      throw ApiError.gone("Invite has reached maximum uses.");
     }
-
     return sendSuccess(res, invite);
   }
 
@@ -144,78 +124,55 @@ export const getInvite = asyncHandler(async (req, res) => {
     .populate("inviter", "username avatar")
     .lean();
 
-  if (!invite) {
-    throw createApiError(404, "Invite not found");
-  }
+  if (!invite) throw ApiError.notFound("Invite not found.");
 
-  // Check if expired
   if (invite.expiresAt && new Date(invite.expiresAt) < new Date()) {
     await InviteModel.findByIdAndDelete(invite._id);
-    throw createApiError(410, "Invite has expired");
+    throw ApiError.gone("Invite has expired.");
   }
-
-  // Check if max uses reached
   if (invite.maxUses && invite.uses >= invite.maxUses) {
-    throw createApiError(410, "Invite has reached maximum uses");
+    throw ApiError.gone("Invite has reached maximum uses.");
   }
 
-  // Add member count to server info
+  // Attach live member count
   const memberCount = await ServerMemberModel.countDocuments({
-    server: invite.server._id,
+    server: (invite.server as { _id: Types.ObjectId })._id,
   });
-  invite.server.memberCount = memberCount;
+  (invite.server as Record<string, unknown>).memberCount = memberCount;
 
-  // Cache the result
   await pubClient.setex(cacheKey, CACHE_TTL.INVITE, JSON.stringify(invite));
 
   sendSuccess(res, invite);
 });
 
-//    Join server using invite code
-export const joinServerWithInvite = asyncHandler(async (req, res) => {
+// ─── Join server with invite ──────────────────────────────────────────────────
+
+export const joinServerWithInvite = asyncHandler(async (req: AuthReq, res: Response) => {
   const { code } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const invite = await InviteModel.findOne({ code });
+  if (!invite) throw ApiError.notFound("Invite not found.");
 
-  if (!invite) {
-    throw createApiError(404, "Invite not found");
-  }
-
-  // Check if expired
   if (invite.expiresAt && new Date(invite.expiresAt) < new Date()) {
-    await InviteModel.findByIdAndDelete(invite._id);
-    throw createApiError(410, "Invite has expired");
+    await invite.deleteOne();
+    throw ApiError.gone("Invite has expired.");
   }
-
-  // Check if max uses reached
   if (invite.maxUses && invite.uses >= invite.maxUses) {
-    throw createApiError(410, "Invite has reached maximum uses");
+    throw ApiError.gone("Invite has reached maximum uses.");
   }
 
-  // Check if already a member
-  const existingMember = await ServerMemberModel.findOne({
+  const alreadyMember = await ServerMemberModel.exists({
     server: invite.server,
     user: userId,
   });
+  if (alreadyMember) throw ApiError.badRequest("You are already a member of this server.");
 
-  if (existingMember) {
-    throw createApiError(400, "You are already a member of this server");
-  }
-
-  // Get server
   const server = await ServerModel.findById(invite.server);
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
-  }
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  // Get default role for new members
-  const defaultRole = await RoleModel.findOne({
-    server: invite.server,
-    isDefault: true,
-  });
+  const defaultRole = await RoleModel.findOne({ server: invite.server, isDefault: true });
 
-  // Create server member
   const member = await ServerMemberModel.create({
     user: userId,
     server: invite.server,
@@ -223,42 +180,34 @@ export const joinServerWithInvite = asyncHandler(async (req, res) => {
     roles: defaultRole ? [defaultRole._id] : [],
   });
 
-  // Add to server's members array
   server.members.push(member._id);
   await server.save();
 
-  // Increment invite uses
   invite.uses += 1;
   await invite.save();
 
-  // If max uses reached, optionally delete the invite
+  // Clean up exhausted invite
   if (invite.maxUses && invite.uses >= invite.maxUses) {
-    await InviteModel.findByIdAndDelete(invite._id);
+    await invite.deleteOne();
   }
 
-  // Invalidate caches
+  const serverId = invite.server.toString();
+
   await Promise.all([
-    invalidateInviteCache(invite.server.toString(), code),
+    invalidateInviteCache(serverId, code),
     pubClient.del(`user:${userId}:servers`),
   ]);
 
-  // Populate member details
   const populatedMember = await ServerMemberModel.findById(member._id)
     .populate("user", "username avatar status")
     .lean();
 
-  // Emit socket event to server
-  emitToServer(invite.server.toString(), "member:joined", {
+  emitToServer(serverId, "member:joined", {
     member: populatedMember,
-    server: {
-      _id: server._id,
-      name: server.name,
-      icon: server.icon,
-    },
+    server: { _id: server._id, name: server.name, icon: server.icon },
     timestamp: new Date(),
   });
 
-  // Emit to user
   emitToUser(userId, "server:joined", {
     server: {
       _id: server._id,
@@ -269,148 +218,116 @@ export const joinServerWithInvite = asyncHandler(async (req, res) => {
     timestamp: new Date(),
   });
 
-  const response = {
-    server: await ServerModel.findById(invite.server)
-      .populate("owner", "username avatar")
-      .populate("channels")
-      .lean(),
-    member: populatedMember,
-  };
+  const fullServer = await ServerModel.findById(invite.server)
+    .populate("owner", "username avatar")
+    .populate("channels")
+    .lean();
 
-  sendSuccess(res, response, "Successfully joined server");
+  sendSuccess(res, { server: fullServer, member: populatedMember }, "Successfully joined server.");
 });
 
-//    Get all invites for a server
-export const getServerInvites = asyncHandler(async (req, res) => {
+// ─── Get server invites ───────────────────────────────────────────────────────
+
+export const getServerInvites = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
   const userId = validateObjectId(req.user._id);
 
-  // Check permissions
   const membership = await checkMemberPermission(serverId, userId);
-
   if (!["owner", "admin", "moderator"].includes(membership.role)) {
-    throw createApiError(
-      403,
-      "Only admins and moderators can view server invites",
-    );
+    throw ApiError.forbidden("Only admins and moderators can view server invites.");
   }
 
   const cacheKey = getCacheKey.serverInvites(serverId);
-
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
-  if (cached) {
-    return sendSuccess(res, JSON.parse(cached));
-  }
+  if (cached) return sendSuccess(res, JSON.parse(cached));
 
   const invites = await InviteModel.find({ server: serverId })
     .populate("inviter", "username avatar")
     .sort({ createdAt: -1 })
     .lean();
 
-  // Remove expired invites
   const now = new Date();
+
+  // FIX: original called InviteModel.findByIdAndDelete inside .filter() without await
+  // — fire-and-forget deletions in a sync filter are never awaited. Do it properly.
+  const expiredIds: Types.ObjectId[] = [];
   const validInvites = invites.filter((invite) => {
     if (invite.expiresAt && new Date(invite.expiresAt) < now) {
-      InviteModel.findByIdAndDelete(invite._id);
+      expiredIds.push(invite._id as Types.ObjectId);
       return false;
     }
-    if (invite.maxUses && invite.uses >= invite.maxUses) {
-      return false;
-    }
+    if (invite.maxUses && invite.uses >= invite.maxUses) return false;
     return true;
   });
 
-  // Cache the result
-  await pubClient.setex(
-    cacheKey,
-    CACHE_TTL.SERVER_INVITES,
-    JSON.stringify(validInvites),
-  );
+  if (expiredIds.length > 0) {
+    await InviteModel.deleteMany({ _id: { $in: expiredIds } });
+  }
+
+  await pubClient.setex(cacheKey, CACHE_TTL.SERVER_INVITES, JSON.stringify(validInvites));
 
   sendSuccess(res, validInvites);
 });
 
-//    Delete/Revoke an invite
-export const deleteInvite = asyncHandler(async (req, res) => {
+// ─── Delete invite ────────────────────────────────────────────────────────────
+
+export const deleteInvite = asyncHandler(async (req: AuthReq, res: Response) => {
   const { code } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const invite = await InviteModel.findOne({ code });
+  if (!invite) throw ApiError.notFound("Invite not found.");
 
-  if (!invite) {
-    throw createApiError(404, "Invite not found");
-  }
-
-  // Check permissions - must be inviter, admin, or owner
   const membership = await ServerMemberModel.findOne({
     server: invite.server,
     user: userId,
   });
-
-  if (!membership) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-  }
+  if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
   const isInviter = invite.inviter.toString() === userId;
   const isAdmin = ["owner", "admin", "moderator"].includes(membership.role);
 
   if (!isInviter && !isAdmin) {
-    throw createApiError(
-      403,
-      "You don't have permission to delete this invite",
-    );
+    throw ApiError.forbidden("You don't have permission to delete this invite.");
   }
 
   const serverId = invite.server.toString();
 
-  // Remove from server's invites array
-  await ServerModel.findByIdAndUpdate(serverId, {
-    $pull: { invites: invite._id },
-  });
-
+  await ServerModel.findByIdAndUpdate(serverId, { $pull: { invites: invite._id } });
   await invite.deleteOne();
-
-  // Invalidate cache
   await invalidateInviteCache(serverId, code);
 
-  sendSuccess(res, null, "Invite deleted successfully");
+  sendSuccess(res, null, "Invite deleted successfully.");
 });
 
-//    Clean up expired invites (can be called by a cron job)
-export const cleanupExpiredInvites = asyncHandler(async (req, res) => {
-  const now = new Date();
+// ─── Cleanup expired invites (cron-callable) ──────────────────────────────────
 
-  // Find and delete expired invites
-  const expiredInvites = await InviteModel.find({
-    expiresAt: { $lt: now },
+export const cleanupExpiredInvites = asyncHandler(async (_req: Request, res: Response) => {
+  const expired = await InviteModel.find({ expiresAt: { $lt: new Date() } });
+
+  const serverIds = new Set<string>();
+
+  // FIX: original iterated with per-document awaits — batch the deletes instead
+  const inviteIds = expired.map((inv) => {
+    serverIds.add(inv.server.toString());
+    return inv._id;
   });
 
-  const serverIds = new Set();
+  await InviteModel.deleteMany({ _id: { $in: inviteIds } });
 
-  for (const invite of expiredInvites) {
-    serverIds.add(invite.server.toString());
-
-    // Remove from server's invites array
-    await ServerModel.findByIdAndUpdate(invite.server, {
-      $pull: { invites: invite._id },
-    });
-
-    await invite.deleteOne();
-  }
-
-  // Invalidate caches for affected servers
-  for (const serverId of serverIds) {
-    await invalidateInviteCache(serverId);
-  }
-
-  sendSuccess(
-    res,
-    {
-      deletedCount: expiredInvites.length,
-    },
-    "Expired invites cleaned up successfully",
+  // Remove from server arrays in parallel
+  await Promise.all(
+    [...serverIds].map((serverId) =>
+      ServerModel.updateMany(
+        { _id: serverId },
+        { $pull: { invites: { $in: inviteIds } } },
+      ),
+    ),
   );
+
+  await Promise.all([...serverIds].map((sid) => invalidateInviteCache(sid)));
+
+  sendSuccess(res, { deletedCount: expired.length }, "Expired invites cleaned up successfully.");
 });
 
 export default {

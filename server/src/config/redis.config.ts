@@ -1,113 +1,109 @@
-import Redis from "ioredis";
+import Redis, { type RedisOptions } from "ioredis";
 import { getEnv } from "./env.config.js";
 
-const redisConfig = {
-  maxRetriesPerRequest: null, // Important for Socket.IO adapter
+// ─── Config 
+
+const redisOptions: RedisOptions = {
+  // Must be null for Socket.IO adapter — it uses blocking commands
+  maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  retryStrategy: (times: number) => {
+  lazyConnect: false,
+  retryStrategy: (times: number): number => {
+    // Exponential back-off capped at 2 s
     const delay = Math.min(times * 50, 2000);
+    console.log(`Redis retry attempt ${times}, next in ${delay}ms`);
     return delay;
   },
-  reconnectOnError: (err: Error) => {
-    const targetError = "READONLY";
-    if (err.message.includes(targetError)) {
-      // Only reconnect when the error contains "READONLY"
-      return true;
-    }
-    return false;
+  reconnectOnError: (err: Error): boolean => {
+    // Reconnect only on READONLY errors (happens with Redis Sentinel failover)
+    return err.message.includes("READONLY");
   },
 };
 
-// Create Redis clients
-export const pubClient = new Redis(getEnv("REDIS_URL"), redisConfig);
+// ─── Clients ─────────────────────────────────────────────────────────────────
+// pubClient  — used for publishing / general commands
+// subClient  — dedicated subscribe client (ioredis requirement for pub/sub)
+
+export const pubClient = new Redis(getEnv("REDIS_URL"), redisOptions);
 export const subClient = pubClient.duplicate();
 
-// Track connection status
+// ─── Connection state ────────────────────────────────────────────────────────
+
 let isPubReady = false;
 let isSubReady = false;
 
-// Pub Client event handlers
-pubClient.on("connect", () => {
-  console.log("Redis Pub Client connecting...");
-});
+// ─── Pub client events ───────────────────────────────────────────────────────
 
+pubClient.on("connect", () => console.log("Redis pub: connecting..."));
 pubClient.on("ready", () => {
   isPubReady = true;
-  console.log("Redis Pub Client ready");
+  console.log("Redis pub client ready");
 });
-
-pubClient.on("error", (err) => {
-  console.error("Redis Pub Client error:", err.message);
-});
-
+pubClient.on("error", (err: Error) =>
+  console.error("Redis pub error:", err.message),
+);
 pubClient.on("close", () => {
   isPubReady = false;
-  console.log("Redis Pub Client connection closed");
+  console.warn("Redis pub connection closed");
 });
+pubClient.on("reconnecting", () => console.log("Redis pub: reconnecting..."));
 
-pubClient.on("reconnecting", () => {
-  console.log("Redis Pub Client reconnecting...");
-});
+// ─── Sub client events ───────────────────────────────────────────────────────
 
-// Sub Client event handlers
-subClient.on("connect", () => {
-  console.log("Redis Sub Client connecting...");
-});
-
+subClient.on("connect", () => console.log("Redis sub: connecting..."));
 subClient.on("ready", () => {
   isSubReady = true;
-  console.log("Redis Sub Client ready");
+  console.log("Redis sub client ready");
 });
-
-subClient.on("error", (err) => {
-  console.error("Redis Sub Client error:", err.message);
-});
-
+subClient.on("error", (err: Error) =>
+  console.error("Redis sub error:", err.message),
+);
 subClient.on("close", () => {
   isSubReady = false;
-  console.log("Redis Sub Client connection closed");
+  console.warn("Redis sub connection closed");
 });
+subClient.on("reconnecting", () => console.log("Redis sub: reconnecting..."));
 
-subClient.on("reconnecting", () => {
-  console.log("Redis Sub Client reconnecting...");
-});
+// ─── Health helpers ───────────────────────────────────────────────────────────
 
-// Health check function
-export const isRedisReady = () => {
-  return isPubReady && isSubReady;
-};
+export const isRedisReady = (): boolean => isPubReady && isSubReady;
 
-// Wait for Redis to be ready
-export const waitForRedis = (timeout = 10000) => {
-  return new Promise<void>((resolve, reject) => {
+/**
+ * Resolves when both clients are ready, or rejects after `timeout` ms.
+ * Default timeout is 10 s.
+ */
+export const waitForRedis = (timeout = 10_000): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
     if (isRedisReady()) {
-      return resolve();
+      resolve();
+      return;
     }
 
-    const checkInterval = setInterval(() => {
+    const interval = setInterval(() => {
       if (isRedisReady()) {
-        clearInterval(checkInterval);
-        clearTimeout(timeoutHandle);
+        clearInterval(interval);
+        clearTimeout(timer);
         resolve();
       }
     }, 100);
 
-    const timeoutHandle = setTimeout(() => {
-      clearInterval(checkInterval);
-      reject(new Error("Redis connection timeout"));
+    const timer = setTimeout(() => {
+      clearInterval(interval);
+      reject(new Error(`Redis connection timed out after ${timeout}ms`));
     }, timeout);
   });
-};
 
-// Graceful shutdown
-export const closeRedis = async () => {
+// ─── Graceful shutdown ───────────────────────────────────────────────────────
+
+export const closeRedis = async (): Promise<void> => {
   console.log("Closing Redis connections...");
   try {
+    // QUIT sends the QUIT command and waits for the server ack
     await Promise.all([pubClient.quit(), subClient.quit()]);
-    console.log("Redis connections closed");
-  } catch (error) {
-    console.error("Error closing Redis connections:", error);
-    // Force close if graceful shutdown fails
+    console.log(" Redis connections closed");
+  } catch (err) {
+    console.error("Error closing Redis gracefully, forcing disconnect:", err);
+    // Forcefully destroy TCP sockets if QUIT fails
     pubClient.disconnect();
     subClient.disconnect();
   }

@@ -1,34 +1,76 @@
 import { pubClient } from "../config/redis.config.js";
 
-export const blacklistToken = async (token, expiresIn) => {
+// ─── Token blacklist ──────────────────────────────────────────────────────────
+// Tokens are blacklisted on logout so they can't be reused before expiry.
+
+/**
+ * Add a JWT to the blacklist until it expires.
+ * @param token     - Raw JWT string
+ * @param expiresIn - Remaining TTL in seconds (use the token's `exp` delta)
+ */
+export const blacklistToken = async (
+    token: string,
+    expiresIn: number,
+): Promise<void> => {
     await pubClient.setex(`blacklist:${token}`, expiresIn, "true");
 };
 
-export const isTokenBlacklisted = async (token) => {
+/**
+ * Check whether a JWT has been blacklisted.
+ * @returns `true` if the token is on the blacklist (i.e. logged out)
+ */
+export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
     const result = await pubClient.get(`blacklist:${token}`);
     return result === "true";
 };
 
-export const storeVerificationCode = async (email, code) => {
-    await pubClient.setex(`verify:${email}`, 600, code); // 10 minutes
+// ─── Email verification codes ─────────────────────────────────────────────────
+
+/**
+ * Store a short-lived verification code for the given email address.
+ * TTL: 10 minutes (600 seconds)
+ */
+export const storeVerificationCode = async (
+    email: string,
+    code: string,
+): Promise<void> => {
+    await pubClient.setex(`verify:${email}`, 600, code);
 };
 
-export const getVerificationCode = async (email) => {
-    return await pubClient.get(`verify:${email}`);
+/** Retrieve the stored verification code for an email, or null if expired/absent. */
+export const getVerificationCode = async (
+    email: string,
+): Promise<string | null> => {
+    return pubClient.get(`verify:${email}`);
 };
 
-export const deleteVerificationCode = async (email) => {
+/** Delete the verification code after it has been used or invalidated. */
+export const deleteVerificationCode = async (email: string): Promise<void> => {
     await pubClient.del(`verify:${email}`);
 };
 
-export const storeRefreshToken = async (userId, token) => {
-    await pubClient.setex(`refresh:${userId}`, 2592000, token); // 30 days
+// ─── Refresh tokens ───────────────────────────────────────────────────────────
+// Stored per-user so the latest refresh token can be validated or revoked.
+
+/**
+ * Persist a refresh token for a user.
+ * TTL: 30 days (2 592 000 seconds)
+ */
+export const storeRefreshToken = async (
+    userId: string,
+    token: string,
+): Promise<void> => {
+    await pubClient.setex(`refresh:${userId}`, 2_592_000, token);
 };
 
-export const getRefreshToken = async (userId) => {
-    return await pubClient.get(`refresh:${userId}`);
+/** Retrieve the stored refresh token for a user, or null if absent/expired. */
+export const getRefreshToken = async (
+    userId: string,
+): Promise<string | null> => {
+    return pubClient.get(`refresh:${userId}`);
 };
 
-export const deleteRefreshToken = async (userId) => {
+/** Delete the refresh token (called on logout or token rotation). */
+export const deleteRefreshToken = async (userId: string): Promise<void> => {
     await pubClient.del(`refresh:${userId}`);
 };

@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-// Shared validation constants for consistency
+// ─── Shared constants
+// Defined once here so all auth schemas stay in sync with the user model limits.
+
 const USERNAME_MIN = 3;
 const USERNAME_MAX = 30;
 const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
@@ -11,75 +13,81 @@ const NAME_MAX = 50;
 const BIO_MAX = 500;
 const CUSTOM_STATUS_MAX = 128;
 
-// User Registration Schema
+// ─── Re-usable field definitions
+
+const usernameField = z
+    .string()
+    .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
+    .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
+    .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
+    .trim();
+
+const emailField = z
+    .string()
+    .email("Please provide a valid email address")
+    .toLowerCase()
+    .trim();
+
+const passwordField = z
+    .string()
+    .min(PASSWORD_MIN, `Password must be at least ${PASSWORD_MIN} characters`)
+    .max(PASSWORD_MAX, `Password cannot exceed ${PASSWORD_MAX} characters`);
+
+const nameField = z
+    .string()
+    .min(NAME_MIN, "Display name is required")
+    .max(NAME_MAX, `Display name cannot exceed ${NAME_MAX} characters`)
+    .trim();
+
+const statusField = z.enum(["online", "offline", "away", "dnd"], {
+    message: "Status must be one of: online, offline, away, dnd",
+});
+
+// Avatar accepts a URL string, an empty string (clear avatar), or null
+const avatarField = z
+    .string()
+    .url("Avatar must be a valid URL")
+    .or(z.literal(""))
+    .nullable()
+    .optional();
+
+// ─── Register
+
 export const registerSchema = z.object({
-    username: z
-        .string()
-        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
-        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
-        .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
-        .trim(),
-    email: z
-        .string()
-        .email("Please provide a valid email address")
-        .toLowerCase()
-        .trim(),
-    password: z
-        .string()
-        .min(PASSWORD_MIN, `Password must be at least ${PASSWORD_MIN} characters`)
-        .max(PASSWORD_MAX, `Password cannot exceed ${PASSWORD_MAX} characters`),
-    name: z
-        .string()
-        .min(NAME_MIN, "Display name is required") // ✅ Fixed message
-        .max(NAME_MAX, `Display name cannot exceed ${NAME_MAX} characters`)
-        .trim(),
+    username: usernameField,
+    email: emailField,
+    password: passwordField,
+    name: nameField,
 });
 
-// User Login Schema
-export const loginSchema = z.object({
-    email: z
-        .string()
-        .email("Please provide a valid email")
-        .toLowerCase()
-        .trim()
-        .optional(),
-    username: z
-        .string()
-        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
-        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
-        .trim()
-        .optional(),
-    password: z
-        .string()
-        .min(1, "Password is required"),
-});
+export type RegisterInput = z.infer<typeof registerSchema>;
 
-// Update Profile Schema (for general profile updates)
+// ─── Login 
+// FIX: the original schema allowed both email and username to be absent without
+// any error. Added .refine() to enforce that at least one identifier is supplied.
+
+export const loginSchema = z
+    .object({
+        email: emailField.optional(),
+        username: usernameField.optional(),
+        password: z.string().min(1, "Password is required"),
+    })
+    .refine((data) => data.email !== undefined || data.username !== undefined, {
+        message: "Either email or username is required",
+        path: ["email"],
+    });
+
+export type LoginInput = z.infer<typeof loginSchema>;
+
+// ─── Update profile
+// FIX: original had two nearly identical update schemas (updateProfileSchema and
+// updateUserProfileSchema). Merged into one authoritative schema.
+
 export const updateProfileSchema = z.object({
-    name: z
-        .string()
-        .min(NAME_MIN, `Name must be at least ${NAME_MIN} characters`)
-        .max(NAME_MAX, `Name cannot exceed ${NAME_MAX} characters`)
-        .trim()
-        .optional(),
-    username: z
-        .string()
-        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
-        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
-        .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
-        .trim()
-        .optional(),
-    avatar: z
-        .string()
-        .url("Avatar must be a valid URL")
-        .optional()
-        .or(z.literal(""))
-        .nullable(),
-    status: z
-        .enum(["online", "offline", "away", "dnd"], {
-            errorMap: () => ({ message: "Status must be one of: online, offline, away, dnd" })
-        })
-        .optional(),
+    name: nameField.optional(),
+    username: usernameField.optional(),
+    avatar: avatarField,
+    status: statusField.optional(),
     customStatus: z
         .string()
         .max(CUSTOM_STATUS_MAX, `Custom status cannot exceed ${CUSTOM_STATUS_MAX} characters`)
@@ -90,106 +98,61 @@ export const updateProfileSchema = z.object({
         .optional(),
 });
 
-// Update User Profile Schema (comprehensive profile update)
-export const updateUserProfileSchema = z.object({
-    username: z
-        .string()
-        .min(USERNAME_MIN, `Username must be at least ${USERNAME_MIN} characters`)
-        .max(USERNAME_MAX, `Username cannot exceed ${USERNAME_MAX} characters`)
-        .regex(USERNAME_REGEX, "Username can only contain letters, numbers, and underscores")
-        .trim()
-        .optional(),
-    name: z
-        .string()
-        .min(NAME_MIN, "Display name cannot be empty")
-        .max(NAME_MAX, `Display name cannot exceed ${NAME_MAX} characters`)
-        .trim()
-        .optional(),
-    avatar: z
-        .string()
-        .url("Avatar must be a valid URL")
-        .optional()
-        .or(z.literal(""))
-        .nullable(),
-    bio: z
-        .string()
-        .max(BIO_MAX, `Bio cannot exceed ${BIO_MAX} characters`)
-        .optional(),
-    status: z
-        .enum(["online", "offline", "away", "dnd"], {
-            errorMap: () => ({ message: "Status must be one of: online, offline, away, dnd" })
-        })
-        .optional(),
-    customStatus: z
-        .string()
-        .max(CUSTOM_STATUS_MAX, `Custom status cannot exceed ${CUSTOM_STATUS_MAX} characters`)
-        .optional(),
-});
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
-// Change Password Schema
-export const changePasswordSchema = z.object({
-    currentPassword: z
-        .string()
-        .min(1, "Current password is required"),
-    newPassword: z
-        .string()
-        .min(PASSWORD_MIN, `New password must be at least ${PASSWORD_MIN} characters`)
-        .max(PASSWORD_MAX, `New password cannot exceed ${PASSWORD_MAX} characters`),
-    confirmPassword: z
-        .string()
-        .min(1, "Please confirm your new password"),
-}).refine((data) => data.newPassword === data.confirmPassword, {
-    message: "Passwords do not match",
-    path: ["confirmPassword"],
-});
+// ─── Change password
+export const changePasswordSchema = z
+    .object({
+        currentPassword: z.string().min(1, "Current password is required"),
+        newPassword: passwordField,
+        confirmPassword: z.string().min(1, "Please confirm your new password"),
+    })
+    .refine((data) => data.newPassword === data.confirmPassword, {
+        message: "Passwords do not match",
+        path: ["confirmPassword"],
+    });
 
-// Update User Status Schema
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+// ─── Update status
 export const updateUserStatusSchema = z.object({
-    status: z
-        .enum(["online", "offline", "away", "dnd"], {
-            errorMap: () => ({ message: "Status must be one of: online, offline, away, dnd" })
-        }),
+    status: statusField,
     customStatus: z
         .string()
         .max(CUSTOM_STATUS_MAX, `Custom status cannot exceed ${CUSTOM_STATUS_MAX} characters`)
         .optional(),
 });
 
-// Email Verification Schema
+export type UpdateUserStatusInput = z.infer<typeof updateUserStatusSchema>;
+
+// ─── Email verification
 export const verifyEmailSchema = z.object({
-    email: z
-        .string()
-        .email("Please provide a valid email address")
-        .toLowerCase()
-        .trim(),
+    email: emailField,
     code: z
         .string()
-        .length(6, "Verification code must be 6 digits")
-        .regex(/^\d+$/, "Verification code must contain only numbers"),
+        .length(6, "Verification code must be exactly 6 digits")
+        .regex(/^\d{6}$/, "Verification code must contain only digits"),
 });
 
-// Reset Password Request Schema
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
+
+// ─── Password reset request
 export const resetPasswordRequestSchema = z.object({
-    email: z
-        .string()
-        .email("Please provide a valid email address")
-        .toLowerCase()
-        .trim(),
+    email: emailField,
 });
 
-// Reset Password Schema
-export const resetPasswordSchema = z.object({
-    token: z
-        .string()
-        .min(1, "Reset token is required"),
-    newPassword: z
-        .string()
-        .min(PASSWORD_MIN, `Password must be at least ${PASSWORD_MIN} characters`)
-        .max(PASSWORD_MAX, `Password cannot exceed ${PASSWORD_MAX} characters`),
-    confirmPassword: z
-        .string()
-        .min(1, "Please confirm your password"),
-}).refine((data) => data.newPassword === data.confirmPassword, {
-    message: "Passwords do not match",
-    path: ["confirmPassword"],
-});
+export type ResetPasswordRequestInput = z.infer<typeof resetPasswordRequestSchema>;
+
+// ─── Password reset
+export const resetPasswordSchema = z
+    .object({
+        token: z.string().min(1, "Reset token is required"),
+        newPassword: passwordField,
+        confirmPassword: z.string().min(1, "Please confirm your password"),
+    })
+    .refine((data) => data.newPassword === data.confirmPassword, {
+        message: "Passwords do not match",
+        path: ["confirmPassword"],
+    });
+
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;

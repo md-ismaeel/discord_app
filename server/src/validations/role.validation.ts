@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { objectIdSchema } from "./common.js";
+
+// ─── Permissions sub-schema ───────────────────────────────────────────────────
+// Every field is optional here so partial permission updates are valid.
+// The model provides defaults for any field not explicitly set.
 
 export const permissionsSchema = z.object({
   administrator: z.boolean().optional(),
@@ -18,53 +23,68 @@ export const permissionsSchema = z.object({
   deafenMembers: z.boolean().optional(),
 });
 
+export type PermissionsInput = z.infer<typeof permissionsSchema>;
+
+// ─── Create role ──────────────────────────────────────────────────────────────
+
 export const createRoleSchema = z.object({
   name: z
     .string()
     .min(1, "Role name is required")
-    .max(50, "Role name cannot exceed 50 characters"),
+    .max(100, "Role name cannot exceed 100 characters") // FIX: was 50, model allows 100
+    .trim(),
   color: z
     .string()
-    .regex(/^#[0-9A-Fa-f]{6}$/, "Invalid color format")
+    .regex(/^#[0-9A-Fa-f]{6}$/, "Color must be a valid hex code (e.g. #99AAB5)")
     .optional(),
   permissions: permissionsSchema.optional(),
 });
+
+export type CreateRoleInput = z.infer<typeof createRoleSchema>;
+
+// ─── Update role ──────────────────────────────────────────────────────────────
 
 export const updateRoleSchema = z.object({
   name: z
     .string()
     .min(1, "Role name is required")
-    .max(50, "Role name cannot exceed 50 characters")
+    .max(100, "Role name cannot exceed 100 characters")
+    .trim()
     .optional(),
   color: z
     .string()
-    .regex(/^#[0-9A-Fa-f]{6}$/, "Invalid color format")
+    .regex(/^#[0-9A-Fa-f]{6}$/, "Color must be a valid hex code (e.g. #99AAB5)")
     .optional(),
   permissions: permissionsSchema.optional(),
-  position: z.number().int().min(0).optional(),
+  position: z.number().int().min(0, "Position cannot be negative").optional(),
 });
+
+export type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
+
+// ─── Reorder roles ────────────────────────────────────────────────────────────
 
 export const reorderRolesSchema = z.object({
   roleOrder: z
     .array(
       z.object({
-        roleId: z.string().regex(/^[0-9a-fA-F]{24}$/),
+        roleId: objectIdSchema,
         position: z.number().int().min(0),
       }),
     )
     .min(1, "roleOrder must contain at least one role"),
 });
 
-export const serverIdParamSchema = z.object({
-  serverId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid server ID"),
-});
+export type ReorderRolesInput = z.infer<typeof reorderRolesSchema>;
 
-export const roleIdParamSchema = z.object({
-  roleId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid role ID"),
-});
+// ─── Param schemas ────────────────────────────────────────────────────────────
+
+export { serverIdParamSchema, roleIdParamSchema } from "./common.js";
+export type { ServerIdParam, RoleIdParam } from "./common.js";
 
 export const memberRoleParamSchema = z.object({
-  serverId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid server ID"),
-  memberId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid member ID"),
-  roleId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid role ID"),
+  serverId: objectIdSchema,
+  memberId: objectIdSchema,
+  roleId: objectIdSchema,
 });
+
+export type MemberRoleParam = z.infer<typeof memberRoleParamSchema>;

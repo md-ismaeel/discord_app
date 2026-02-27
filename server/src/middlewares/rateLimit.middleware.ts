@@ -1,187 +1,187 @@
-import { pubClient } from "../config/redis.config.js";
-import { createApiError } from "../utils/ApiError.js";
-import { asyncHandler } from "../utils/asyncHandler.js";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { pubClient } from "@/config/redis.config";
+import { ApiError, isApiError } from "@/utils/ApiError";
+import { asyncHandler } from "@/utils/asyncHandler";
 
-//  * Get client IP address (handles proxies and load balancers)
-const getClientIp = (req) => {
-  return (
-    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-    req.headers["x-real-ip"] ||
-    req.ip ||
-    req.connection.remoteAddress ||
-    "unknown"
-  );
-};
+// ─── Types
 
-//  * Generic rate limiter factory
-//  * @param {string} prefix - Key prefix for Redis (e.g., 'login_attempts', 'register_attempts')
-//  * @param {number} maxAttempts - Maximum allowed attempts
-//  * @param {number} windowSeconds - Time window in seconds
-//  * @param {string} errorMessage - Custom error message
+interface RateLimitError {
+  field: "rateLimit";
+  message: string;
+  retryAfter: number;
+}
+
+// ─── IP resolution
+
+/**
+ * Resolve the real client IP, honouring X-Forwarded-For from trusted proxies.
+ * Make sure Express's `trust proxy` setting is enabled when behind a load balancer.
+ */
+const getClientIp = (req: Request): string =>
+  (req.headers["x-forwarded-for"] as string | undefined)
+    ?.split(",")[0]
+    ?.trim() ??
+  (req.headers["x-real-ip"] as string | undefined) ??
+  req.ip ??
+  req.socket.remoteAddress ?? // req.connection is deprecated since Node 13
+  "unknown";
+
+// ─── Factory
+
+/**
+ * Build a rate-limiter middleware backed by Redis.
+ *
+ * @param prefix        - Redis key prefix, e.g. "login_attempts"
+ * @param maxAttempts   - Maximum allowed requests in the window
+ * @param windowSeconds - Sliding window duration in seconds
+ * @param errorMessage  - Message shown when the limit is exceeded
+ */
 const createRateLimiter = (
-  prefix,
-  maxAttempts,
-  windowSeconds,
-  errorMessage,
-) => {
-  return asyncHandler(async (req, res, next) => {
-    const ip = getClientIp(req);
-    const key = `${prefix}:${ip}`;
+  prefix: string,
+  maxAttempts: number,
+  windowSeconds: number,
+  errorMessage: string,
+): RequestHandler =>
+  asyncHandler(
+    async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+      const ip = getClientIp(req);
+      const key = `${prefix}:${ip}`;
 
-    try {
-      const attempts = await pubClient.get(key);
-      const currentAttempts = attempts ? parseInt(attempts) : 0;
+      try {
+        const raw = await pubClient.get(key);
+        const currentAttempts = raw !== null ? parseInt(raw, 10) : 0;
 
-      if (currentAttempts >= maxAttempts) {
-        const ttl = await pubClient.ttl(key);
-        const minutesLeft = Math.ceil(ttl / 60);
+        if (currentAttempts >= maxAttempts) {
+          const ttl = await pubClient.ttl(key);
+          const minutesLeft = Math.ceil(ttl / 60);
 
-        throw createApiError(
-          429,
-          errorMessage ||
+          const details: RateLimitError = {
+            field: "rateLimit",
+            message: `Rate limit exceeded. Retry after ${minutesLeft} minute(s).`,
+            retryAfter: ttl,
+          };
+
+          throw new ApiError(
+            429,
+            errorMessage ||
             `Too many attempts. Please try again in ${minutesLeft} minute(s).`,
-          [
-            {
-              field: "rateLimit",
-              message: `Rate limit exceeded. Retry after ${minutesLeft} minute(s)`,
-              retryAfter: ttl,
-            },
-          ],
-        );
-      }
+            [details],
+          );
+        }
 
-      // Attach IP to request for later use
-      req.clientIp = ip;
-      next();
-    } catch (error) {
-      // If it's already an ApiError, pass it through
-      if (error.statusCode) {
-        throw error;
+        req.clientIp = ip;
+        next();
+      } catch (err) {
+        if (isApiError(err)) {
+          throw err; // Re-throw rate-limit errors — they're expected
+        }
+        // Redis is unavailable — log and fail open (don't block the request)
+        console.error(`Rate limiter unavailable for "${prefix}":`, err);
+        next();
       }
-      // Redis connection error - log but don't block the request
-      console.error(`Rate limit check failed for ${prefix}:`, error);
-      next();
-    }
-  });
-};
+    },
+  );
 
-//  * Record an attempt in Redis
-//  * @param {string} prefix - Key prefix
-//  * @param {string} ip - Client IP
-//  * @param {number} windowSeconds - TTL in seconds
-const recordAttempt = async (prefix, ip, windowSeconds) => {
+// ─── Shared internals
+
+/**
+ * Increment (or create) the attempt counter for an IP.
+ * Called after a failed attempt so the counter only climbs on failures.
+ */
+const recordAttempt = async (
+  prefix: string,
+  ip: string,
+  windowSeconds: number,
+): Promise<void> => {
   const key = `${prefix}:${ip}`;
-
   try {
-    const current = await pubClient.get(key);
-
-    if (current) {
+    const exists = await pubClient.get(key);
+    if (exists !== null) {
       await pubClient.incr(key);
     } else {
       await pubClient.setex(key, windowSeconds, "1");
     }
-  } catch (error) {
-    console.error(`Failed to record attempt for ${prefix}:`, error);
+  } catch (err) {
+    console.error(`recordAttempt failed for "${prefix}":`, err);
   }
 };
 
-//  * Clear attempts from Redis
-//  * @param {string} prefix - Key prefix
-//  * @param {string} ip - Client IP
-const clearAttempts = async (prefix, ip) => {
-  const key = `${prefix}:${ip}`;
-
+/** Remove the attempt counter after a successful operation. */
+const clearAttempts = async (prefix: string, ip: string): Promise<void> => {
   try {
-    await pubClient.del(key);
-  } catch (error) {
-    console.error(`Failed to clear attempts for ${prefix}:`, error);
+    await pubClient.del(`${prefix}:${ip}`);
+  } catch (err) {
+    console.error(`clearAttempts failed for "${prefix}":`, err);
   }
 };
 
-// ==================== LOGIN RATE LIMITING ====================
+// ─── Login
+// 5 attempts / 15 minutes
 
-//  * Rate limit for login attempts
-//  * Limit: 5 attempts per 15 minutes
 export const loginRateLimit = createRateLimiter(
   "login_attempts",
   5,
-  900, // 15 minutes
+  900,
   "Too many login attempts. Please try again in a few minutes.",
 );
 
-//  * Record a failed login attempt
-export const recordLoginAttempt = async (ip) => {
-  await recordAttempt("login_attempts", ip, 900);
-};
+export const recordLoginAttempt = (ip: string): Promise<void> =>
+  recordAttempt("login_attempts", ip, 900);
 
-//  * Clear login attempts (called after successful login)
-export const clearLoginAttempts = async (ip) => {
-  await clearAttempts("login_attempts", ip);
-};
+export const clearLoginAttempts = (ip: string): Promise<void> =>
+  clearAttempts("login_attempts", ip);
 
-// ==================== REGISTER RATE LIMITING ====================
+// ─── Register 
+// 3 attempts / 15 minutes
 
-//  * Rate limit for registration attempts
-//  * Limit: 3 attempts per 15 minutes
 export const registerRateLimit = createRateLimiter(
   "register_attempts",
   3,
-  900, // 15 minutes
+  900,
   "Too many registration attempts. Please try again in a few minutes.",
 );
 
-//  * Record a failed registration attempt
-export const recordRegisterAttempt = async (ip) => {
-  await recordAttempt("register_attempts", ip, 900);
-};
+export const recordRegisterAttempt = (ip: string): Promise<void> =>
+  recordAttempt("register_attempts", ip, 900);
 
-//  * Clear registration attempts (called after successful registration)
-export const clearRegisterAttempts = async (ip) => {
-  await clearAttempts("register_attempts", ip);
-};
+export const clearRegisterAttempts = (ip: string): Promise<void> =>
+  clearAttempts("register_attempts", ip);
 
-// ==================== PASSWORD RESET RATE LIMITING ====================
+// ─── Password reset 
+// 3 attempts / 1 hour
 
-//  * Rate limit for password reset requests
-//  * Limit: 3 attempts per 1 hour
 export const passwordResetRateLimit = createRateLimiter(
   "password_reset_attempts",
   3,
-  3600, // 1 hour
+  3600,
   "Too many password reset requests. Please try again later.",
 );
 
-export const recordPasswordResetAttempt = async (ip) => {
-  await recordAttempt("password_reset_attempts", ip, 3600);
-};
+export const recordPasswordResetAttempt = (ip: string): Promise<void> =>
+  recordAttempt("password_reset_attempts", ip, 3600);
 
-export const clearPasswordResetAttempts = async (ip) => {
-  await clearAttempts("password_reset_attempts", ip);
-};
+export const clearPasswordResetAttempts = (ip: string): Promise<void> =>
+  clearAttempts("password_reset_attempts", ip);
 
-// ==================== EMAIL VERIFICATION RATE LIMITING ====================
+// ─── Email verification 
+// 5 attempts / 30 minutes
 
-//  * Rate limit for email verification code requests
-//  * Limit: 5 attempts per 30 minutes
 export const emailVerificationRateLimit = createRateLimiter(
   "email_verification_attempts",
   5,
-  1800, // 30 minutes
+  1800,
   "Too many verification requests. Please try again later.",
 );
 
-export const recordEmailVerificationAttempt = async (ip) => {
-  await recordAttempt("email_verification_attempts", ip, 1800);
-};
+export const recordEmailVerificationAttempt = (ip: string): Promise<void> =>
+  recordAttempt("email_verification_attempts", ip, 1800);
 
-export const clearEmailVerificationAttempts = async (ip) => {
-  await clearAttempts("email_verification_attempts", ip);
-};
+export const clearEmailVerificationAttempts = (ip: string): Promise<void> =>
+  clearAttempts("email_verification_attempts", ip);
 
-// ==================== GENERAL API RATE LIMITING ====================
+// ─── General API 
+// 100 requests / 15 minutes
 
-//  * General API rate limiter
-//  * Limit: 100 requests per 15 minutes
 export const generalApiRateLimit = createRateLimiter(
   "api_requests",
   100,

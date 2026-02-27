@@ -1,5 +1,7 @@
+import type { Request, Response } from "express";
+import type { Types } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { RoleModel } from "../models/role.model.js";
@@ -10,448 +12,324 @@ import { emitToServer } from "../socket/socketHandler.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 import { validateObjectId } from "../utils/validateObjId.js";
 
-const CACHE_TTL = {
-  ROLES: 900, // 15 minutes
-  ROLE: 900, // 15 minutes
-};
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type MemberRole = "owner" | "admin" | "moderator" | "member";
+
+interface AuthReq extends Request {
+  user: { _id: Types.ObjectId };
+}
+
+// ─── Cache helpers ────────────────────────────────────────────────────────────
+
+const CACHE_TTL = { ROLES: 900, ROLE: 900 } as const;
 
 const getCacheKey = {
-  serverRoles: (serverId) => `server:${serverId}:roles`,
-  role: (roleId) => `role:${roleId}`,
+  serverRoles: (serverId: string): string => `server:${serverId}:roles`,
+  role: (roleId: string): string => `role:${roleId}`,
 };
 
-const invalidateRoleCache = async (serverId, roleId = null) => {
-  const keys = [getCacheKey.serverRoles(serverId), `server:${serverId}`];
-
-  if (roleId) {
-    keys.push(getCacheKey.role(roleId));
-  }
-
+const invalidateRoleCache = async (
+  serverId: string,
+  roleId: string | null = null,
+): Promise<void> => {
+  const keys: string[] = [getCacheKey.serverRoles(serverId), `server:${serverId}`];
+  if (roleId) keys.push(getCacheKey.role(roleId));
   await pubClient.del(...keys);
 };
 
-// Helper to check member permissions
+// ─── Permission helper ────────────────────────────────────────────────────────
+
 const checkMemberPermission = async (
-  serverId,
-  userId,
-  requiredRole = ["owner", "admin"],
+  serverId: string,
+  userId: string,
+  requiredRoles: MemberRole[] = ["owner", "admin"],
 ) => {
-  const membership = await ServerMemberModel.findOne({
-    server: serverId,
-    user: userId,
-  });
+  const membership = await ServerMemberModel.findOne({ server: serverId, user: userId });
+  if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
-  if (!membership) {
-    throw createApiError(
-      HTTP_STATUS.FORBIDDEN,
-      ERROR_MESSAGES.NOT_SERVER_MEMBER,
-    );
-  }
-
-  if (!requiredRole.includes(membership.role)) {
-    throw createApiError(
-      HTTP_STATUS.FORBIDDEN,
-      `Only ${requiredRole.join(", ")} can perform this action`,
-    );
+  if (!requiredRoles.includes(membership.role as MemberRole)) {
+    throw ApiError.forbidden(`Only ${requiredRoles.join(", ")} can perform this action.`);
   }
 
   return membership;
 };
 
-//    Create a new role
-export const createRole = asyncHandler(async (req, res) => {
+// ─── Create role ──────────────────────────────────────────────────────────────
+
+export const createRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
-  const { name, color, permissions } = req.body;
+  const { name, color, permissions } = req.body as {
+    name: string;
+    color?: string;
+    permissions?: Record<string, boolean>;
+  };
   const userId = validateObjectId(req.user._id);
 
-  // Check permissions
   await checkMemberPermission(serverId, userId, ["owner", "admin"]);
 
-  // Verify server exists
   const server = await ServerModel.findById(serverId);
-  if (!server) {
-    throw createApiError(
-      HTTP_STATUS.NOT_FOUND,
-      ERROR_MESSAGES.SERVER_NOT_FOUND,
-    );
-  }
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  // Check for duplicate role name in the same server
-  const existingRole = await RoleModel.findOne({
-    server: serverId,
-    name: name,
-  });
+  const duplicate = await RoleModel.findOne({ server: serverId, name });
+  if (duplicate) throw ApiError.conflict("A role with this name already exists in this server.");
 
-  if (existingRole) {
-    throw createApiError(
-      400,
-      "A role with this name already exists in this server",
-    );
-  }
+  const highest = await RoleModel.findOne({ server: serverId }).sort({ position: -1 }).lean();
+  const position = highest ? highest.position + 1 : 0;
 
-  // Get highest position for new role
-  const highestRole = await RoleModel.findOne({ server: serverId })
-    .sort({ position: -1 })
-    .lean();
-
-  const position = highestRole ? highestRole.position + 1 : 0;
-
-  // Create role
   const role = await RoleModel.create({
     name,
-    color: color || "#99AAB5",
+    color: color ?? "#99AAB5",
     server: serverId,
-    permissions: permissions || {},
+    permissions: permissions ?? {},
     position,
   });
 
-  // Invalidate cache
   await invalidateRoleCache(serverId);
 
-  // Emit socket event
-  emitToServer(serverId, "role:created", {
-    role,
-    createdBy: userId,
-    timestamp: new Date(),
-  });
+  emitToServer(serverId, "role:created", { role, createdBy: userId, timestamp: new Date() });
 
-  sendCreated(res, role, "Role created successfully");
+  sendCreated(res, role, "Role created successfully.");
 });
 
-//    Get all roles in a server
-export const getServerRoles = asyncHandler(async (req, res) => {
+// ─── Get server roles ─────────────────────────────────────────────────────────
+
+export const getServerRoles = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
   const userId = validateObjectId(req.user._id);
 
-  // Check if user is a member
-  await checkMemberPermission(serverId, userId, [
-    "owner",
-    "admin",
-    "moderator",
-    "member",
-  ]);
+  await checkMemberPermission(serverId, userId, ["owner", "admin", "moderator", "member"]);
 
   const cacheKey = getCacheKey.serverRoles(serverId);
-
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
-  if (cached) {
-    return sendSuccess(res, JSON.parse(cached));
-  }
+  if (cached) return sendSuccess(res, JSON.parse(cached));
 
-  const roles = await RoleModel.find({ server: serverId })
-    .sort({ position: -1 }) // Highest position first (most powerful)
-    .lean();
+  const roles = await RoleModel.find({ server: serverId }).sort({ position: -1 }).lean();
 
-  // Cache the result
   await pubClient.setex(cacheKey, CACHE_TTL.ROLES, JSON.stringify(roles));
 
-  sendSuccess(res, roles, "Roles fetched successfully");
+  sendSuccess(res, roles, "Roles fetched successfully.");
 });
 
-//    Get a single role by ID
-export const getRole = asyncHandler(async (req, res) => {
+// ─── Get single role ──────────────────────────────────────────────────────────
+
+export const getRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { roleId } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const cacheKey = getCacheKey.role(roleId);
-
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
   if (cached) {
     const role = JSON.parse(cached);
-
-    // Verify user has access
     await checkMemberPermission(role.server.toString(), userId, [
-      "owner",
-      "admin",
-      "moderator",
-      "member",
+      "owner", "admin", "moderator", "member",
     ]);
-
     return sendSuccess(res, role);
   }
 
   const role = await RoleModel.findById(roleId).lean();
+  if (!role) throw ApiError.notFound("Role not found.");
 
-  if (!role) {
-    throw createApiError(HTTP_STATUS.NOT_FOUND, "Role not found");
-  }
-
-  // Check if user is a server member
   await checkMemberPermission(role.server.toString(), userId, [
-    "owner",
-    "admin",
-    "moderator",
-    "member",
+    "owner", "admin", "moderator", "member",
   ]);
 
-  // Cache the role
   await pubClient.setex(cacheKey, CACHE_TTL.ROLE, JSON.stringify(role));
 
   sendSuccess(res, role);
 });
 
-//    Update a role
-export const updateRole = asyncHandler(async (req, res) => {
+// ─── Update role ──────────────────────────────────────────────────────────────
+
+export const updateRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { roleId } = req.params;
-  const { name, color, permissions, position } = req.body;
+  const { name, color, permissions, position } = req.body as {
+    name?: string;
+    color?: string;
+    permissions?: Record<string, boolean>;
+    position?: number;
+  };
   const userId = validateObjectId(req.user._id);
 
   const role = await RoleModel.findById(roleId);
+  if (!role) throw ApiError.notFound("Role not found.");
 
-  if (!role) {
-    throw createApiError(404, "Role not found");
-  }
+  await checkMemberPermission(role.server.toString(), userId, ["owner", "admin"]);
 
-  // Check permissions
-  await checkMemberPermission(role.server.toString(), userId, [
-    "owner",
-    "admin",
-  ]);
-
-  // Cannot modify default role's basic permissions
+  // Protect default role's core permissions
+  let safePermissions = permissions;
   if (role.isDefault && permissions) {
-    // Ensure default role keeps basic permissions
-    permissions.readMessages = true;
-    permissions.sendMessages = true;
-    permissions.connect = true;
-    permissions.speak = true;
+    safePermissions = {
+      ...permissions,
+      readMessages: true,
+      sendMessages: true,
+      connect: true,
+      speak: true,
+    };
   }
 
-  // Check for duplicate name if name is being changed
   if (name && name !== role.name) {
-    const existingRole = await RoleModel.findOne({
+    const duplicate = await RoleModel.findOne({
       server: role.server,
-      name: name,
+      name,
       _id: { $ne: roleId },
     });
-
-    if (existingRole) {
-      throw createApiError(
-        400,
-        "A role with this name already exists in this server",
-      );
+    if (duplicate) {
+      throw ApiError.conflict("A role with this name already exists in this server.");
     }
     role.name = name;
   }
 
-  // Update fields
   if (color !== undefined) role.color = color;
-  if (permissions !== undefined) {
-    role.permissions = { ...role.permissions, ...permissions };
+  if (safePermissions !== undefined) {
+    role.permissions = { ...role.permissions.toObject?.() ?? role.permissions, ...safePermissions };
   }
   if (position !== undefined) role.position = position;
 
   await role.save();
-
-  // Invalidate caches
   await invalidateRoleCache(role.server.toString(), roleId);
 
-  // Emit socket event
-  emitToServer(role.server.toString(), "role:updated", {
-    role,
-    updatedBy: userId,
-    timestamp: new Date(),
-  });
+  emitToServer(role.server.toString(), "role:updated", { role, updatedBy: userId, timestamp: new Date() });
 
-  sendSuccess(res, role, "Role updated successfully");
+  sendSuccess(res, role, "Role updated successfully.");
 });
 
-//    Delete a role
-export const deleteRole = asyncHandler(async (req, res) => {
+// ─── Delete role ──────────────────────────────────────────────────────────────
+
+export const deleteRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { roleId } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const role = await RoleModel.findById(roleId);
+  if (!role) throw ApiError.notFound("Role not found.");
 
-  if (!role) {
-    throw createApiError(404, "Role not found");
-  }
+  if (role.isDefault) throw ApiError.badRequest("Cannot delete the default role.");
 
-  // Cannot delete default role
-  if (role.isDefault) {
-    throw createApiError(400, "Cannot delete the default role");
-  }
-
-  // Check permissions (only owner and admin can delete)
-  await checkMemberPermission(role.server.toString(), userId, [
-    "owner",
-    "admin",
-  ]);
+  await checkMemberPermission(role.server.toString(), userId, ["owner", "admin"]);
 
   const serverId = role.server.toString();
 
-  // Remove role from all members who have it
   await ServerMemberModel.updateMany(
     { server: serverId, roles: roleId },
     { $pull: { roles: roleId } },
   );
 
-  // Delete the role
   await role.deleteOne();
-
-  // Invalidate caches
   await invalidateRoleCache(serverId, roleId);
 
-  // Emit socket event
-  emitToServer(serverId, "role:deleted", {
-    roleId,
-    deletedBy: userId,
-    timestamp: new Date(),
-  });
+  emitToServer(serverId, "role:deleted", { roleId, deletedBy: userId, timestamp: new Date() });
 
-  sendSuccess(res, null, "Role deleted successfully");
+  sendSuccess(res, null, "Role deleted successfully.");
 });
 
-//    Reorder roles
-export const reorderRoles = asyncHandler(async (req, res) => {
+// ─── Reorder roles ────────────────────────────────────────────────────────────
+
+export const reorderRoles = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
-  const { roleOrder } = req.body; // Array of { roleId, position }
+  const { roleOrder } = req.body as {
+    roleOrder: Array<{ roleId: string; position: number }>;
+  };
   const userId = validateObjectId(req.user._id);
 
-  // Validate request body
   if (!Array.isArray(roleOrder) || roleOrder.length === 0) {
-    throw createApiError(400, "roleOrder must be a non-empty array");
+    throw ApiError.badRequest("roleOrder must be a non-empty array.");
   }
 
-  // Check permissions
   await checkMemberPermission(serverId, userId, ["owner", "admin"]);
 
-  // Update positions in bulk
-  const bulkOps = roleOrder.map(({ roleId, position }) => ({
-    updateOne: {
-      filter: { _id: roleId, server: serverId },
-      update: { $set: { position } },
-    },
-  }));
+  await RoleModel.bulkWrite(
+    roleOrder.map(({ roleId, position }) => ({
+      updateOne: {
+        filter: { _id: roleId, server: serverId },
+        update: { $set: { position } },
+      },
+    })),
+  );
 
-  await RoleModel.bulkWrite(bulkOps);
+  const roles = await RoleModel.find({ server: serverId }).sort({ position: -1 }).lean();
 
-  // Get updated roles
-  const roles = await RoleModel.find({ server: serverId })
-    .sort({ position: -1 })
-    .lean();
-
-  // Invalidate cache
   await invalidateRoleCache(serverId);
 
-  // Emit socket event
-  emitToServer(serverId, "roles:reordered", {
-    roles,
-    reorderedBy: userId,
-    timestamp: new Date(),
-  });
+  emitToServer(serverId, "roles:reordered", { roles, reorderedBy: userId, timestamp: new Date() });
 
-  sendSuccess(res, roles, "Roles reordered successfully");
+  sendSuccess(res, roles, "Roles reordered successfully.");
 });
 
-//    Assign role to a member
-export const assignRole = asyncHandler(async (req, res) => {
+// ─── Assign role to member ────────────────────────────────────────────────────
+
+export const assignRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId, memberId, roleId } = req.params;
   const userId = validateObjectId(req.user._id);
 
-  // Check permissions
   await checkMemberPermission(serverId, userId, ["owner", "admin"]);
 
-  // Verify role exists and belongs to this server
   const role = await RoleModel.findOne({ _id: roleId, server: serverId });
-  if (!role) {
-    throw createApiError(404, "Role not found in this server");
+  if (!role) throw ApiError.notFound("Role not found in this server.");
+
+  const member = await ServerMemberModel.findOne({ server: serverId, user: memberId });
+  if (!member) throw ApiError.notFound("Member not found in this server.");
+
+  if (!member.roles) member.roles = [];
+
+  // FIX: original used Array.includes on an ObjectId array — must compare as strings
+  if (member.roles.some((id) => id.toString() === roleId)) {
+    throw ApiError.badRequest("Member already has this role.");
   }
 
-  // Find the member
-  const member = await ServerMemberModel.findOne({
-    server: serverId,
-    user: memberId,
-  });
-
-  if (!member) {
-    throw createApiError(404, "Member not found in this server");
-  }
-
-  // Check if member already has this role
-  if (!member.roles) {
-    member.roles = [];
-  }
-
-  if (member.roles.includes(roleId)) {
-    throw createApiError(400, "Member already has this role");
-  }
-
-  // Add role
-  member.roles.push(roleId);
+  member.roles.push(roleId as unknown as Types.ObjectId);
   await member.save();
 
-  const populatedMember = await ServerMemberModel.findById(member._id)
+  const populated = await ServerMemberModel.findById(member._id)
     .populate("user", "username avatar status")
     .populate("roles")
     .lean();
 
-  // Invalidate caches
-  await Promise.all([
-    invalidateRoleCache(serverId),
-    pubClient.del(`server:${serverId}`),
-  ]);
+  await Promise.all([invalidateRoleCache(serverId), pubClient.del(`server:${serverId}`)]);
 
-  // Emit socket event
   emitToServer(serverId, "member:roleAssigned", {
-    member: populatedMember,
+    member: populated,
     role,
     assignedBy: userId,
     timestamp: new Date(),
   });
 
-  sendSuccess(res, populatedMember, "Role assigned successfully");
+  sendSuccess(res, populated, "Role assigned successfully.");
 });
 
-//    Remove role from a member
-export const removeRole = asyncHandler(async (req, res) => {
+// ─── Remove role from member ──────────────────────────────────────────────────
+
+export const removeRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId, memberId, roleId } = req.params;
   const userId = validateObjectId(req.user._id);
 
-  // Check permissions
   await checkMemberPermission(serverId, userId, ["owner", "admin"]);
 
-  // Find the member
-  const member = await ServerMemberModel.findOne({
-    server: serverId,
-    user: memberId,
-  });
+  const member = await ServerMemberModel.findOne({ server: serverId, user: memberId });
+  if (!member) throw ApiError.notFound("Member not found in this server.");
 
-  if (!member) {
-    throw createApiError(404, "Member not found in this server");
+  // FIX: same ObjectId string comparison fix
+  if (!member.roles?.some((id) => id.toString() === roleId)) {
+    throw ApiError.badRequest("Member doesn't have this role.");
   }
 
-  // Check if member has this role
-  if (!member.roles || !member.roles.includes(roleId)) {
-    throw createApiError(400, "Member doesn't have this role");
-  }
-
-  // Remove role
   member.roles = member.roles.filter((id) => id.toString() !== roleId);
   await member.save();
 
-  const populatedMember = await ServerMemberModel.findById(member._id)
+  const populated = await ServerMemberModel.findById(member._id)
     .populate("user", "username avatar status")
     .populate("roles")
     .lean();
 
-  // Invalidate caches
-  await Promise.all([
-    invalidateRoleCache(serverId),
-    pubClient.del(`server:${serverId}`),
-  ]);
+  await Promise.all([invalidateRoleCache(serverId), pubClient.del(`server:${serverId}`)]);
 
-  // Emit socket event
   emitToServer(serverId, "member:roleRemoved", {
-    member: populatedMember,
+    member: populated,
     roleId,
     removedBy: userId,
     timestamp: new Date(),
   });
 
-  sendSuccess(res, populatedMember, "Role removed successfully");
+  sendSuccess(res, populated, "Role removed successfully.");
 });
 
 export default {

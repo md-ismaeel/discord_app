@@ -5,17 +5,81 @@ import {
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  CopyObjectCommand,          // FIX: original used PutObjectCommand for copies — wrong command
+  type ObjectCannedACL,
+  type HeadObjectCommandOutput,
+  type DeletedObject,
+  type Error as S3Error,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createApiError } from "../utils/ApiError.js";
-import { HTTP_STATUS } from "../constants/httpStatus.js";
+import { ApiError } from "../utils/ApiError.js";
 import { getEnv } from "../config/env.config.js";
 import crypto from "crypto";
 import path from "path";
 
-// ============================================================================
-// S3 CLIENT CONFIGURATION
-// ============================================================================
+// ─── Return-type interfaces ───────────────────────────────────────────────────
+
+export interface S3UploadResult {
+  /** Full public URL (CloudFront or direct S3) */
+  url: string;
+  /** S3 object key — store this for deletion */
+  key: string;
+  /** File size in bytes */
+  size: number;
+}
+
+export interface S3AttachmentResult extends S3UploadResult {
+  /** Original filename (for display in chat) */
+  filename: string;
+  /** File extension without the dot, e.g. "pdf" */
+  type: string;
+}
+
+export interface S3EmojiResult {
+  url: string;
+  key: string;
+}
+
+export interface S3DeleteResult {
+  success: true;
+  key: string;
+}
+
+export interface S3BatchDeleteResult {
+  deleted: DeletedObject[];
+  errors: S3Error[];
+}
+
+export interface S3FileMetadata {
+  contentType?: string;
+  contentLength?: number;
+  lastModified?: Date;
+  metadata?: Record<string, string>;
+  etag?: string;
+}
+
+export interface S3PresignedUploadResult {
+  url: string;
+  key: string;
+  expiresIn: number;
+}
+
+export interface S3CopyResult {
+  sourceKey: string;
+  destinationKey: string;
+  url: string;
+}
+
+// ─── Upload options ───────────────────────────────────────────────────────────
+
+interface UploadOptions {
+  contentType?: string;
+  acl?: ObjectCannedACL;
+  metadata?: Record<string, string>;
+  cacheControl?: string;
+}
+
+// ─── S3 Client ────────────────────────────────────────────────────────────────
 
 const s3Client = new S3Client({
   region: getEnv("AWS_REGION"),
@@ -25,48 +89,40 @@ const s3Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = getEnv("AWS_BUCKET_NAME");
-const CDN_URL = getEnv("AWS_CLOUDFRONT_URL") || null; // Optional CloudFront CDN
+const BUCKET_NAME: string = getEnv("AWS_BUCKET_NAME");
+// Trim trailing slash from CDN_URL so `${CDN_URL}/${key}` is always clean
+const CDN_URL: string | null =
+  (getEnv("AWS_CLOUDFRONT_URL") || "").replace(/\/$/, "") || null;
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+// ─── Private helpers ──────────────────────────────────────────────────────────
 
 /**
- * Generate unique filename
- * @param {String} originalName - Original filename
- * @param {String} prefix - Optional prefix
- * @returns {String} - Unique filename
+ * Build a unique filename that is safe for S3 keys.
+ * Format: `{prefix}{timestamp}-{8-byte-hex}-{sanitised-name}{ext}`
  */
-const generateUniqueFilename = (originalName, prefix = "") => {
+const generateUniqueFilename = (originalName: string, prefix = ""): string => {
   const timestamp = Date.now();
-  const randomString = crypto.randomBytes(8).toString("hex");
+  const random = crypto.randomBytes(8).toString("hex");
   const ext = path.extname(originalName);
-  const name = path.basename(originalName, ext).replace(/[^a-zA-Z0-9]/g, "-");
+  const base = path
+    .basename(originalName, ext)
+    .replace(/[^a-zA-Z0-9]/g, "-")
+    .slice(0, 60); // Prevent excessively long keys
 
-  return `${prefix}${timestamp}-${randomString}-${name}${ext}`;
+  return `${prefix}${timestamp}-${random}-${base}${ext}`;
 };
 
 /**
- * Get file URL (with CDN if configured)
- * @param {String} key - S3 object key
- * @returns {String} - File URL
+ * Build the public URL for an S3 key, using CloudFront if configured.
  */
-const getFileUrl = (key) => {
-  if (CDN_URL) {
-    return `${CDN_URL}/${key}`;
-  }
-  return `https://${BUCKET_NAME}.s3.${getEnv("AWS_REGION")}.amazonaws.com/${key}`;
-};
+const getFileUrl = (key: string): string =>
+  CDN_URL
+    ? `${CDN_URL}/${key}`
+    : `https://${BUCKET_NAME}.s3.${getEnv("AWS_REGION")}.amazonaws.com/${key}`;
 
-/**
- * Get content type from file extension
- * @param {String} filename - Filename
- * @returns {String} - Content type
- */
-const getContentType = (filename) => {
-  const ext = path.extname(filename).toLowerCase();
-  const contentTypes = {
+/** Map common file extensions to MIME types. Falls back to octet-stream. */
+const getContentType = (filename: string): string => {
+  const MIME_MAP: Record<string, string> = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
@@ -74,462 +130,303 @@ const getContentType = (filename) => {
     ".webp": "image/webp",
     ".pdf": "application/pdf",
     ".doc": "application/msword",
-    ".docx":
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
     ".zip": "application/zip",
     ".rar": "application/x-rar-compressed",
   };
-  return contentTypes[ext] || "application/octet-stream";
+  return MIME_MAP[path.extname(filename).toLowerCase()] ?? "application/octet-stream";
 };
 
-// ============================================================================
-// UPLOAD FUNCTIONS
-// ============================================================================
+// ─── Core upload ──────────────────────────────────────────────────────────────
 
 /**
- * Upload file to S3
- * @param {Buffer} fileBuffer - File buffer
- * @param {String} key - S3 object key (path)
- * @param {Object} options - Additional options
- * @returns {Promise<Object>} - Upload result
+ * Upload a Buffer to S3 at the given key.
+ * All public upload helpers delegate here.
  */
-const uploadToS3 = async (fileBuffer, key, options = {}) => {
+const uploadToS3 = async (
+  fileBuffer: Buffer,
+  key: string,
+  options: UploadOptions = {},
+): Promise<S3UploadResult> => {
   try {
-    const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-      Body: fileBuffer,
-      ContentType: options.contentType || getContentType(key),
-      ACL: options.acl || "public-read",
-      Metadata: options.metadata || {},
-      CacheControl: options.cacheControl || "max-age=31536000", // 1 year
-    });
-
-    await s3Client.send(command);
-
-    return {
-      key,
-      url: getFileUrl(key),
-      bucket: BUCKET_NAME,
-      size: fileBuffer.length,
-    };
-  } catch (error) {
-    console.error("S3 upload error:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to upload file to S3",
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+        Body: fileBuffer,
+        ContentType: options.contentType ?? getContentType(key),
+        ACL: options.acl ?? "public-read",
+        Metadata: options.metadata ?? {},
+        CacheControl: options.cacheControl ?? "max-age=31536000", // 1 year
+      }),
     );
+
+    return { key, url: getFileUrl(key), size: fileBuffer.length };
+  } catch (err) {
+    console.error("S3 upload error:", err);
+    throw ApiError.internal("Failed to upload file to S3.");
   }
 };
 
-/**
- * Upload user avatar
- * @param {Buffer} fileBuffer - Image buffer
- * @param {String} userId - User ID
- * @param {String} originalName - Original filename
- * @returns {Promise<Object>} - { url, key, size }
- */
-export const uploadAvatar = async (fileBuffer, userId, originalName) => {
-  const filename = generateUniqueFilename(originalName, "avatar-");
-  const key = `avatars/${userId}/${filename}`;
+// ─── Upload helpers ───────────────────────────────────────────────────────────
 
-  const result = await uploadToS3(fileBuffer, key, {
+/** Upload a user avatar. Returns `{ url, key, size }`. */
+export const uploadAvatar = async (
+  fileBuffer: Buffer,
+  userId: string,
+  originalName: string,
+): Promise<S3UploadResult> => {
+  const key = `avatars/${userId}/${generateUniqueFilename(originalName, "avatar-")}`;
+  return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
-    metadata: {
-      userId,
-      type: "avatar",
-    },
+    metadata: { userId, type: "avatar" },
   });
-
-  return {
-    url: result.url,
-    key: result.key,
-    size: result.size,
-  };
 };
 
-/**
- * Upload server icon
- * @param {Buffer} fileBuffer - Image buffer
- * @param {String} serverId - Server ID
- * @param {String} originalName - Original filename
- * @returns {Promise<Object>} - { url, key, size }
- */
-export const uploadServerIcon = async (fileBuffer, serverId, originalName) => {
-  const filename = generateUniqueFilename(originalName, "icon-");
-  const key = `servers/${serverId}/icon/${filename}`;
-
-  const result = await uploadToS3(fileBuffer, key, {
+/** Upload a server icon. Returns `{ url, key, size }`. */
+export const uploadServerIcon = async (
+  fileBuffer: Buffer,
+  serverId: string,
+  originalName: string,
+): Promise<S3UploadResult> => {
+  const key = `servers/${serverId}/icon/${generateUniqueFilename(originalName, "icon-")}`;
+  return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
-    metadata: {
-      serverId,
-      type: "server-icon",
-    },
+    metadata: { serverId, type: "server-icon" },
   });
-
-  return {
-    url: result.url,
-    key: result.key,
-    size: result.size,
-  };
 };
 
-/**
- * Upload server banner
- * @param {Buffer} fileBuffer - Image buffer
- * @param {String} serverId - Server ID
- * @param {String} originalName - Original filename
- * @returns {Promise<Object>} - { url, key, size }
- */
+/** Upload a server banner. Returns `{ url, key, size }`. */
 export const uploadServerBanner = async (
-  fileBuffer,
-  serverId,
-  originalName,
-) => {
-  const filename = generateUniqueFilename(originalName, "banner-");
-  const key = `servers/${serverId}/banner/${filename}`;
-
-  const result = await uploadToS3(fileBuffer, key, {
+  fileBuffer: Buffer,
+  serverId: string,
+  originalName: string,
+): Promise<S3UploadResult> => {
+  const key = `servers/${serverId}/banner/${generateUniqueFilename(originalName, "banner-")}`;
+  return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
-    metadata: {
-      serverId,
-      type: "server-banner",
-    },
+    metadata: { serverId, type: "server-banner" },
   });
-
-  return {
-    url: result.url,
-    key: result.key,
-    size: result.size,
-  };
 };
 
-/**
- * Upload message attachment
- * @param {Buffer} fileBuffer - File buffer
- * @param {String} channelId - Channel ID
- * @param {String} originalName - Original filename
- * @returns {Promise<Object>} - { url, key, filename, size, type }
- */
+/** Upload a message attachment (image or file). Returns full attachment metadata. */
 export const uploadMessageAttachment = async (
-  fileBuffer,
-  channelId,
-  originalName,
-) => {
-  const filename = generateUniqueFilename(originalName);
-  const key = `messages/${channelId}/${filename}`;
-
+  fileBuffer: Buffer,
+  channelId: string,
+  originalName: string,
+): Promise<S3AttachmentResult> => {
+  const key = `messages/${channelId}/${generateUniqueFilename(originalName)}`;
   const result = await uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
-    metadata: {
-      channelId,
-      originalName,
-      type: "message-attachment",
-    },
+    metadata: { channelId, originalName, type: "message-attachment" },
   });
 
   return {
-    url: result.url,
-    key: result.key,
+    ...result,
     filename: originalName,
-    size: result.size,
-    type: path.extname(originalName).substring(1),
+    type: path.extname(originalName).replace(".", ""),
   };
 };
 
-/**
- * Upload custom emoji
- * @param {Buffer} fileBuffer - Image buffer
- * @param {String} serverId - Server ID
- * @param {String} emojiName - Emoji name
- * @param {String} originalName - Original filename
- * @returns {Promise<Object>} - { url, key }
- */
+/** Upload a custom server emoji. Returns `{ url, key }`. */
 export const uploadCustomEmoji = async (
-  fileBuffer,
-  serverId,
-  emojiName,
-  originalName,
-) => {
+  fileBuffer: Buffer,
+  serverId: string,
+  emojiName: string,
+  originalName: string,
+): Promise<S3EmojiResult> => {
   const ext = path.extname(originalName);
   const key = `servers/${serverId}/emojis/${emojiName}${ext}`;
-
   const result = await uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
-    metadata: {
-      serverId,
-      emojiName,
-      type: "custom-emoji",
-    },
+    metadata: { serverId, emojiName, type: "custom-emoji" },
   });
-
-  return {
-    url: result.url,
-    key: result.key,
-  };
+  return { url: result.url, key: result.key };
 };
 
-// ============================================================================
-// BATCH OPERATIONS
-// ============================================================================
+// ─── Batch upload ─────────────────────────────────────────────────────────────
 
 /**
- * Upload multiple message attachments
- * @param {Array} files - Array of multer files
- * @param {String} channelId - Channel ID
- * @returns {Promise<Array>} - Array of upload results
+ * Upload multiple multer files as message attachments concurrently.
+ * FIX: original had a pointless try/catch that only re-threw — removed.
  */
-export const uploadMultipleAttachments = async (files, channelId) => {
+export const uploadMultipleAttachments = (
+  files: Express.Multer.File[],
+  channelId: string,
+): Promise<S3AttachmentResult[]> =>
+  Promise.all(
+    files.map((f) => uploadMessageAttachment(f.buffer, channelId, f.originalname)),
+  );
+
+// ─── Delete helpers ───────────────────────────────────────────────────────────
+
+/** Delete one object from S3 by key. */
+export const deleteFromS3 = async (key: string): Promise<S3DeleteResult> => {
   try {
-    const uploadPromises = files.map((file) =>
-      uploadMessageAttachment(file.buffer, channelId, file.originalname),
+    await s3Client.send(
+      new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
     );
-
-    const results = await Promise.all(uploadPromises);
-    return results;
-  } catch (error) {
-    throw error;
-  }
-};
-
-// ============================================================================
-// DELETE FUNCTIONS
-// ============================================================================
-
-/**
- * Delete file from S3
- * @param {String} key - S3 object key
- * @returns {Promise<Object>} - Deletion result
- */
-export const deleteFromS3 = async (key) => {
-  try {
-    const command = new DeleteObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-    });
-
-    await s3Client.send(command);
-
     return { success: true, key };
-  } catch (error) {
-    console.error("S3 delete error:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to delete file from S3",
-    );
+  } catch (err) {
+    console.error("S3 delete error:", err);
+    throw ApiError.internal("Failed to delete file from S3.");
   }
 };
 
-/**
- * Delete multiple files from S3
- * @param {Array} keys - Array of S3 object keys
- * @returns {Promise<Object>} - Deletion results
- */
-export const deleteMultipleFiles = async (keys) => {
+/** Delete multiple objects in a single S3 request. */
+export const deleteMultipleFiles = async (
+  keys: string[],
+): Promise<S3BatchDeleteResult> => {
   try {
-    const command = new DeleteObjectsCommand({
-      Bucket: BUCKET_NAME,
-      Delete: {
-        Objects: keys.map((key) => ({ Key: key })),
-      },
-    });
-
-    const result = await s3Client.send(command);
-
-    return {
-      deleted: result.Deleted || [],
-      errors: result.Errors || [],
-    };
-  } catch (error) {
-    console.error("S3 batch delete error:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to delete files from S3",
+    const result = await s3Client.send(
+      new DeleteObjectsCommand({
+        Bucket: BUCKET_NAME,
+        Delete: { Objects: keys.map((Key) => ({ Key })) },
+      }),
     );
+    return {
+      deleted: result.Deleted ?? [],
+      errors: result.Errors ?? [],
+    };
+  } catch (err) {
+    console.error("S3 batch delete error:", err);
+    throw ApiError.internal("Failed to delete files from S3.");
   }
 };
 
+// ─── URL utilities ────────────────────────────────────────────────────────────
+
 /**
- * Extract S3 key from URL
- * @param {String} url - S3 or CloudFront URL
- * @returns {String|null} - S3 key or null
+ * Extract the S3 object key from a public URL (CloudFront or direct S3).
+ * Returns `null` if the URL doesn't match either pattern.
  */
-export const extractKeyFromUrl = (url) => {
+export const extractKeyFromUrl = (url: string): string | null => {
   if (!url) return null;
 
   try {
-    // Handle CloudFront URLs
     if (CDN_URL && url.startsWith(CDN_URL)) {
-      return url.replace(`${CDN_URL}/`, "");
+      return url.slice(CDN_URL.length + 1); // +1 for the trailing "/"
     }
 
-    // Handle S3 URLs
-    const s3UrlPattern = new RegExp(
-      `https://${BUCKET_NAME}\\.s3\\.${getEnv("AWS_REGION")}\\.amazonaws\\.com/(.+)`,
+    const pattern = new RegExp(
+      `^https://${BUCKET_NAME}\\.s3\\.${getEnv("AWS_REGION")}\\.amazonaws\\.com/(.+)$`,
     );
-    const match = url.match(s3UrlPattern);
-
-    if (match) {
-      return decodeURIComponent(match[1]);
-    }
-
-    return null;
-  } catch (error) {
-    console.error("Error extracting S3 key:", error);
+    const match = url.match(pattern);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch (err) {
+    console.error("Error extracting S3 key:", err);
     return null;
   }
 };
 
-// ============================================================================
-// PRESIGNED URLs (For Private Files)
-// ============================================================================
+// ─── Presigned URLs ───────────────────────────────────────────────────────────
 
 /**
- * Generate presigned URL for temporary access to private files
- * @param {String} key - S3 object key
- * @param {Number} expiresIn - Expiration time in seconds (default: 1 hour)
- * @returns {Promise<String>} - Presigned URL
+ * Generate a short-lived download URL for a private file.
+ * @param expiresIn - TTL in seconds (default 1 hour)
  */
-export const generatePresignedUrl = async (key, expiresIn = 3600) => {
+export const generatePresignedUrl = async (
+  key: string,
+  expiresIn = 3_600,
+): Promise<string> => {
   try {
-    const command = new GetObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-    });
-
-    const url = await getSignedUrl(s3Client, command, { expiresIn });
-    return url;
-  } catch (error) {
-    console.error("Error generating presigned URL:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to generate presigned URL",
+    return await getSignedUrl(
+      s3Client,
+      new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
+      { expiresIn },
     );
+  } catch (err) {
+    console.error("Error generating presigned URL:", err);
+    throw ApiError.internal("Failed to generate presigned URL.");
   }
 };
 
 /**
- * Generate presigned upload URL (for direct browser uploads)
- * @param {String} key - S3 object key
- * @param {String} contentType - File content type
- * @param {Number} expiresIn - Expiration time in seconds (default: 15 minutes)
- * @returns {Promise<Object>} - { url, key }
+ * Generate a short-lived upload URL for direct browser-to-S3 uploads.
+ * @param expiresIn - TTL in seconds (default 15 minutes)
  */
 export const generatePresignedUploadUrl = async (
-  key,
-  contentType,
+  key: string,
+  contentType: string,
   expiresIn = 900,
-) => {
+): Promise<S3PresignedUploadResult> => {
   try {
-    const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-      ContentType: contentType,
-    });
-
-    const url = await getSignedUrl(s3Client, command, { expiresIn });
-
-    return {
-      url,
-      key,
-      expiresIn,
-    };
-  } catch (error) {
-    console.error("Error generating presigned upload URL:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to generate presigned upload URL",
+    const url = await getSignedUrl(
+      s3Client,
+      new PutObjectCommand({ Bucket: BUCKET_NAME, Key: key, ContentType: contentType }),
+      { expiresIn },
     );
+    return { url, key, expiresIn };
+  } catch (err) {
+    console.error("Error generating presigned upload URL:", err);
+    throw ApiError.internal("Failed to generate presigned upload URL.");
   }
 };
 
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
+// ─── Utility helpers ──────────────────────────────────────────────────────────
 
 /**
- * Check if file exists in S3
- * @param {String} key - S3 object key
- * @returns {Promise<Boolean>} - True if exists
+ * Check whether a key exists in S3 without downloading the object.
+ * Uses HeadObject which is billed as a GET but returns no body.
  */
-export const fileExists = async (key) => {
+export const fileExists = async (key: string): Promise<boolean> => {
   try {
-    const command = new HeadObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-    });
-
-    await s3Client.send(command);
+    await s3Client.send(
+      new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
+    );
     return true;
-  } catch (error) {
-    if (error.name === "NotFound") {
-      return false;
-    }
-    throw error;
+  } catch (err: unknown) {
+    // AWS SDK v3 throws NotFound (404) for missing objects
+    if ((err as { name?: string }).name === "NotFound") return false;
+    throw err;
   }
 };
 
-/**
- * Get file metadata
- * @param {String} key - S3 object key
- * @returns {Promise<Object>} - File metadata
- */
-export const getFileMetadata = async (key) => {
+/** Return metadata for an S3 object (content type, size, last modified, etc.). */
+export const getFileMetadata = async (key: string): Promise<S3FileMetadata> => {
   try {
-    const command = new HeadObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-    });
-
-    const response = await s3Client.send(command);
-
-    return {
-      contentType: response.ContentType,
-      contentLength: response.ContentLength,
-      lastModified: response.LastModified,
-      metadata: response.Metadata,
-      etag: response.ETag,
-    };
-  } catch (error) {
-    console.error("Error getting file metadata:", error);
-    throw createApiError(HTTP_STATUS.NOT_FOUND, "File not found in S3");
-  }
-};
-
-/**
- * Copy file within S3
- * @param {String} sourceKey - Source S3 key
- * @param {String} destinationKey - Destination S3 key
- * @returns {Promise<Object>} - Copy result
- */
-export const copyFile = async (sourceKey, destinationKey) => {
-  try {
-    const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: destinationKey,
-      CopySource: `${BUCKET_NAME}/${sourceKey}`,
-    });
-
-    await s3Client.send(command);
-
-    return {
-      sourceKey,
-      destinationKey,
-      url: getFileUrl(destinationKey),
-    };
-  } catch (error) {
-    console.error("Error copying file in S3:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to copy file in S3",
+    const res: HeadObjectCommandOutput = await s3Client.send(
+      new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
     );
+    return {
+      contentType: res.ContentType,
+      contentLength: res.ContentLength,
+      lastModified: res.LastModified,
+      metadata: res.Metadata,
+      etag: res.ETag,
+    };
+  } catch (err) {
+    console.error("Error getting S3 file metadata:", err);
+    throw ApiError.notFound("File not found in S3.");
   }
 };
 
-// ============================================================================
-// EXPORTS
-// ============================================================================
+/**
+ * Copy an object within the same S3 bucket.
+ * FIX: original used PutObjectCommand with a CopySource header — that is not
+ * how the AWS SDK v3 copies work. The correct command is CopyObjectCommand.
+ */
+export const copyFile = async (
+  sourceKey: string,
+  destinationKey: string,
+): Promise<S3CopyResult> => {
+  try {
+    await s3Client.send(
+      new CopyObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: destinationKey,
+        CopySource: `${BUCKET_NAME}/${sourceKey}`,
+      }),
+    );
+    return { sourceKey, destinationKey, url: getFileUrl(destinationKey) };
+  } catch (err) {
+    console.error("Error copying S3 file:", err);
+    throw ApiError.internal("Failed to copy file in S3.");
+  }
+};
+
+// ─── Default export (for convenience) ────────────────────────────────────────
 
 export default {
   uploadAvatar,

@@ -1,60 +1,74 @@
-import { v2 as cloudinary } from "cloudinary";
-import { createApiError } from "../utils/ApiError.js";
-import { HTTP_STATUS } from "../constants/httpStatus.js";
-import { getEnv } from "../config/env.config.js";
+import { v2 as cloudinary, type UploadApiOptions, type UploadApiResponse } from "cloudinary";
+import { ApiError } from "@/utils/ApiError";
+import { getEnv } from "@/config/env.config";
 
-// ============================================================================
-// CLOUDINARY CONFIGURATION
-// ============================================================================
+// ─── Configuration ────────────────────────────────────────────────────────────
+// Called once at module load. Throws immediately if any env var is missing.
+
 cloudinary.config({
   cloud_name: getEnv("CLOUDINARY_CLOUD_NAME"),
   api_key: getEnv("CLOUDINARY_API_KEY"),
   api_secret: getEnv("CLOUDINARY_API_SECRET"),
+  secure: true, // Always use HTTPS URLs
 });
 
-// ============================================================================
-// CORE UPLOAD FUNCTION
-// ============================================================================
-/**
- * Upload a file buffer to Cloudinary
- * @param {Buffer} fileBuffer - File buffer from multer (req.file.buffer)
- * @param {Object} options - Cloudinary upload options
- * @returns {Promise<Object>} Upload result with url, publicId, etc.
- */
-const uploadToCloudinary = (fileBuffer, options = {}) => {
+// ─── Return-type interfaces ───────────────────────────────────────────────────
+
+export interface CloudinaryUploadResult {
+  /** Public HTTPS URL */
+  url: string;
+  /** Cloudinary public_id — store this for later deletion */
+  publicId: string;
+}
+
+export interface CloudinaryFileUploadResult extends CloudinaryUploadResult {
+  /** Original filename (preserved for display in chat) */
+  filename: string;
+  /** File size in bytes */
+  size: number;
+}
+
+export interface CloudinaryImageUploadResult extends CloudinaryUploadResult {
+  /** File size in bytes */
+  size: number;
+}
+
+// ─── Core upload helper ───────────────────────────────────────────────────────
+// Wraps the callback-based upload_stream in a Promise.
+// FIX: was (fileBuffer, options = {}) with no types — fileBuffer could be anything.
+
+const uploadToCloudinary = (
+  fileBuffer: Buffer,
+  options: UploadApiOptions = {},
+): Promise<UploadApiResponse> => {
   return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: "auto",
-        ...options,
-      },
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: "auto", ...options },
       (error, result) => {
-        if (error) {
+        if (error || !result) {
           console.error("Cloudinary upload error:", error);
           reject(
-            createApiError(
-              HTTP_STATUS.INTERNAL_SERVER_ERROR,
-              "Failed to upload file to cloud storage",
-            ),
+            ApiError.internal("Failed to upload file to cloud storage."),
           );
         } else {
           resolve(result);
         }
       },
     );
-    uploadStream.end(fileBuffer);
+    stream.end(fileBuffer);
   });
 };
 
-// ============================================================================
-// SPECIFIC UPLOAD FUNCTIONS
-// Each function handles a specific use case with appropriate settings
-// ============================================================================
+// ─── Avatar ───────────────────────────────────────────────────────────────────
 
 /**
- * Upload user avatar (256x256, optimized for profile pictures)
+ * Upload a user avatar.
+ * Resized to 256×256, face-cropped, format-optimised.
  */
-export const uploadAvatarToCloud = async (fileBuffer, userId) => {
+export const uploadAvatarToCloud = async (
+  fileBuffer: Buffer,
+  userId: string,
+): Promise<CloudinaryUploadResult> => {
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/avatars/${userId}`,
     transformation: [
@@ -66,16 +80,19 @@ export const uploadAvatarToCloud = async (fileBuffer, userId) => {
     invalidate: true,
   });
 
-  return {
-    url: result.secure_url,
-    publicId: result.public_id,
-  };
+  return { url: result.secure_url, publicId: result.public_id };
 };
 
+// ─── Server icon ──────────────────────────────────────────────────────────────
+
 /**
- * Upload server icon (512x512)
+ * Upload a server icon.
+ * Resized to 512×512, square-cropped.
  */
-export const uploadServerIconToCloud = async (fileBuffer, serverId) => {
+export const uploadServerIconToCloud = async (
+  fileBuffer: Buffer,
+  serverId: string,
+): Promise<CloudinaryUploadResult> => {
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/servers/${serverId}/icon`,
     transformation: [
@@ -87,16 +104,19 @@ export const uploadServerIconToCloud = async (fileBuffer, serverId) => {
     invalidate: true,
   });
 
-  return {
-    url: result.secure_url,
-    publicId: result.public_id,
-  };
+  return { url: result.secure_url, publicId: result.public_id };
 };
 
+// ─── Server banner ────────────────────────────────────────────────────────────
+
 /**
- * Upload server banner (1920x480)
+ * Upload a server banner.
+ * Resized to 1920×480 (standard widescreen banner ratio).
  */
-export const uploadServerBannerToCloud = async (fileBuffer, serverId) => {
+export const uploadServerBannerToCloud = async (
+  fileBuffer: Buffer,
+  serverId: string,
+): Promise<CloudinaryUploadResult> => {
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/servers/${serverId}/banner`,
     transformation: [
@@ -108,16 +128,19 @@ export const uploadServerBannerToCloud = async (fileBuffer, serverId) => {
     invalidate: true,
   });
 
-  return {
-    url: result.secure_url,
-    publicId: result.public_id,
-  };
+  return { url: result.secure_url, publicId: result.public_id };
 };
 
+// ─── Message image attachment ─────────────────────────────────────────────────
+
 /**
- * Upload message image attachment
+ * Upload an image sent as a message attachment.
+ * Capped at 1920×1920 (preserves aspect ratio via "limit").
  */
-export const uploadMessageImageToCloud = async (fileBuffer, channelId) => {
+export const uploadMessageImageToCloud = async (
+  fileBuffer: Buffer,
+  channelId: string,
+): Promise<CloudinaryImageUploadResult> => {
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/messages/${channelId}`,
     resource_type: "image",
@@ -135,28 +158,45 @@ export const uploadMessageImageToCloud = async (fileBuffer, channelId) => {
   };
 };
 
+// ─── Message file attachment (raw) ────────────────────────────────────────────
+
 /**
- * Upload message file attachment (PDFs, docs, etc.)
+ * Upload a non-image file (PDF, DOCX, ZIP, etc.) as a message attachment.
+ * Uses resource_type "raw" — Cloudinary does not transform these.
  */
-export const uploadMessageFileToCloud = async (fileBuffer, channelId, filename) => {
+export const uploadMessageFileToCloud = async (
+  fileBuffer: Buffer,
+  channelId: string,
+  filename: string,
+): Promise<CloudinaryFileUploadResult> => {
+  // Sanitise the filename for use as a Cloudinary public_id
+  const safeFilename = filename.replace(/[^a-zA-Z0-9.-]/g, "_");
+
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/messages/${channelId}`,
     resource_type: "raw",
-    public_id: `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, "_")}`,
+    public_id: `${Date.now()}-${safeFilename}`,
   });
 
   return {
     url: result.secure_url,
     publicId: result.public_id,
-    filename: filename,
+    filename,
     size: result.bytes,
   };
 };
 
+// ─── Custom emoji ─────────────────────────────────────────────────────────────
+
 /**
- * Upload custom emoji (128x128)
+ * Upload a custom server emoji.
+ * Resized to 128×128 with "fit" crop (preserves aspect ratio).
  */
-export const uploadCustomEmojiToCloud = async (fileBuffer, serverId, emojiName) => {
+export const uploadCustomEmojiToCloud = async (
+  fileBuffer: Buffer,
+  serverId: string,
+  emojiName: string,
+): Promise<CloudinaryUploadResult> => {
   const result = await uploadToCloudinary(fileBuffer, {
     folder: `discord-clone/servers/${serverId}/emojis`,
     public_id: emojiName,
@@ -167,46 +207,47 @@ export const uploadCustomEmojiToCloud = async (fileBuffer, serverId, emojiName) 
     overwrite: true,
   });
 
-  return {
-    url: result.secure_url,
-    publicId: result.public_id,
-  };
+  return { url: result.secure_url, publicId: result.public_id };
 };
 
-// ============================================================================
-// DELETE FUNCTIONS
-// ============================================================================
+// ─── Delete single ────────────────────────────────────────────────────────────
 
 /**
- * Delete a file from Cloudinary using its public ID
+ * Delete one asset from Cloudinary by its public_id.
+ * @param resourceType - "image" | "video" | "raw" (default "image")
  */
-export const deleteFromCloudinary = async (publicId, resourceType = "image") => {
+export const deleteFromCloudinary = async (
+  publicId: string,
+  resourceType: "image" | "video" | "raw" = "image",
+): Promise<{ result: string }> => {
   try {
     const result = await cloudinary.uploader.destroy(publicId, {
       resource_type: resourceType,
     });
-    return result;
-  } catch (error) {
-    console.error("Cloudinary delete error:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to delete file from cloud storage",
-    );
+    return result as { result: string };
+  } catch (err) {
+    console.error("Cloudinary delete error:", err);
+    throw ApiError.internal("Failed to delete file from cloud storage.");
   }
 };
 
+// ─── Delete multiple ──────────────────────────────────────────────────────────
+
 /**
- * Delete multiple files at once
+ * Delete multiple assets in a single API call.
+ * Cloudinary's API accepts up to 100 public_ids per request.
  */
-export const deleteMultipleFromCloudinary = async (publicIds) => {
+export const deleteMultipleFromCloudinary = async (
+  publicIds: string[],
+  resourceType: "image" | "video" | "raw" = "image",
+): Promise<Record<string, string>> => {
   try {
-    const result = await cloudinary.api.delete_resources(publicIds);
-    return result;
-  } catch (error) {
-    console.error("Cloudinary batch delete error:", error);
-    throw createApiError(
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      "Failed to delete files from cloud storage",
-    );
+    const result = await cloudinary.api.delete_resources(publicIds, {
+      resource_type: resourceType,
+    });
+    return result as Record<string, string>;
+  } catch (err) {
+    console.error("Cloudinary batch delete error:", err);
+    throw ApiError.internal("Failed to delete files from cloud storage.");
   }
 };

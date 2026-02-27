@@ -1,167 +1,137 @@
-import multer from "multer";
+import type { Request, Response, NextFunction } from "express";
+import multer, { type FileFilterCallback } from "multer";
 import path from "path";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 
-// ============================================================================
-// FILE FILTERS (What file types are allowed?)
-// ============================================================================
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-/**
- * Accept only images (jpeg, jpg, png, gif, webp)
- */
-const imageFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
+type MulterFileFilter = (
+  req: Request,
+  file: Express.Multer.File,
+  cb: FileFilterCallback,
+) => void;
 
-  if (mimetype && extname) {
+// ─── File filters ─────────────────────────────────────────────────────────────
+
+/** Accept only web-safe images: jpeg, jpg, png, gif, webp */
+const imageFilter: MulterFileFilter = (_req, file, cb) => {
+  const allowed = /^image\/(jpeg|jpg|png|gif|webp)$/i;
+  const extAllowed = /\.(jpeg|jpg|png|gif|webp)$/i;
+
+  // Check BOTH mimetype AND extension — prevents spoofed MIME types
+  if (allowed.test(file.mimetype) && extAllowed.test(file.originalname)) {
     cb(null, true);
   } else {
     cb(
-      createApiError(
-        HTTP_STATUS.BAD_REQUEST,
-        "Only image files are allowed (jpeg, jpg, png, gif, webp)",
+      ApiError.badRequest(
+        "Only image files are allowed (jpeg, jpg, png, gif, webp).",
       ),
     );
   }
 };
 
-/**
- * Accept images and documents
- */
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp|pdf|doc|docx|txt|zip|rar/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+/** Accept images and common document/archive types */
+const fileFilter: MulterFileFilter = (_req, file, cb) => {
+  const extAllowed = /\.(jpeg|jpg|png|gif|webp|pdf|doc|docx|txt|zip|rar)$/i;
 
-  if (extname) {
+  if (extAllowed.test(path.extname(file.originalname))) {
     cb(null, true);
   } else {
-    cb(createApiError(HTTP_STATUS.BAD_REQUEST, "File type not allowed"));
+    cb(ApiError.badRequest("File type not allowed."));
   }
 };
 
-// ============================================================================
-// STORAGE CONFIGURATION
-// ============================================================================
+// ─── Storage ──────────────────────────────────────────────────────────────────
+// Memory storage keeps files in RAM as Buffers — required for Cloudinary uploads
+// (which accept a Buffer, not a file path).
 
-/**
- * Memory Storage - Files stored in RAM as Buffer
- * Use this when uploading to Cloudinary (which we are doing)
- */
 const memoryStorage = multer.memoryStorage();
 
-// ============================================================================
-// MULTER UPLOAD CONFIGURATIONS
-// Each export is a pre-configured multer middleware
-// Use like: router.post('/upload', uploadAvatar.single('avatar'), controller)
-// ============================================================================
+// ─── Upload configurations ────────────────────────────────────────────────────
 
-/**
- * Upload a single avatar image (max 5MB)
- * Usage: uploadAvatar.single('avatar')
- */
+/** Single avatar image — max 5 MB.  Usage: uploadAvatar.single("avatar") */
 export const uploadAvatar = multer({
   storage: memoryStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-    files: 1,
-  },
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
   fileFilter: imageFilter,
 });
 
-/**
- * Upload a single server icon (max 5MB)
- * Usage: uploadServerIcon.single('icon')
- */
+/** Single server icon — max 5 MB.  Usage: uploadServerIcon.single("icon") */
 export const uploadServerIcon = multer({
   storage: memoryStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-    files: 1,
-  },
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
   fileFilter: imageFilter,
 });
 
-/**
- * Upload a single server banner (max 10MB)
- * Usage: uploadServerBanner.single('banner')
- */
+/** Single server banner — max 10 MB.  Usage: uploadServerBanner.single("banner") */
 export const uploadServerBanner = multer({
   storage: memoryStorage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-    files: 1,
-  },
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
   fileFilter: imageFilter,
 });
 
-/**
- * Upload message attachments (max 10 files, 10MB each)
- * Usage: uploadAttachments.array('attachments', 10)
- */
+/** Up to 10 message attachments — max 10 MB each.  Usage: uploadAttachments.array("attachments", 10) */
 export const uploadAttachments = multer({
   storage: memoryStorage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB per file
-    files: 10,
-  },
+  limits: { fileSize: 10 * 1024 * 1024, files: 10 },
   fileFilter: fileFilter,
 });
 
-/**
- * Upload custom emoji (max 2MB)
- * Usage: uploadEmoji.single('emoji')
- */
+/** Single custom emoji — max 2 MB.  Usage: uploadEmoji.single("emoji") */
 export const uploadEmoji = multer({
   storage: memoryStorage,
-  limits: {
-    fileSize: 2 * 1024 * 1024, // 2MB
-    files: 1,
-  },
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
   fileFilter: imageFilter,
 });
 
-// ============================================================================
-// ERROR HANDLING MIDDLEWARE
-// ============================================================================
+// ─── Multer error handler ─────────────────────────────────────────────────────
+// Register AFTER your upload routes: app.use(handleMulterError)
+// Converts multer-specific errors to structured JSON responses.
 
-/**
- * Handle multer-specific errors
- * Add this AFTER your routes: app.use(handleMulterError)
- */
-export const handleMulterError = (err, req, res, next) => {
-  if (err instanceof multer.MulterError) {
-    if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({
-        success: false,
-        message: "File too large. Check size limits for your upload type.",
-        error: { code: err.code, field: err.field },
-      });
-    }
-
-    if (err.code === "LIMIT_FILE_COUNT") {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({
-        success: false,
-        message: "Too many files. Maximum allowed exceeded.",
-        error: { code: err.code },
-      });
-    }
-
-    if (err.code === "LIMIT_UNEXPECTED_FILE") {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({
-        success: false,
-        message: "Unexpected field in upload.",
-        error: { code: err.code, field: err.field },
-      });
-    }
-
-    return res.status(HTTP_STATUS.BAD_REQUEST).json({
-      success: false,
-      message: "Upload error",
-      error: { code: err.code, message: err.message },
-    });
+export const handleMulterError = (
+  err: unknown,
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void => {
+  if (!(err instanceof multer.MulterError)) {
+    next(err); // Pass non-multer errors down the chain
+    return;
   }
 
-  next(err);
+  const base = { success: false as const };
+
+  switch (err.code) {
+    case "LIMIT_FILE_SIZE":
+      res.status(HTTP_STATUS.BAD_REQUEST).json({
+        ...base,
+        message: "File too large. Check the size limit for this upload type.",
+        error: { code: err.code, field: err.field },
+      });
+      break;
+
+    case "LIMIT_FILE_COUNT":
+      res.status(HTTP_STATUS.BAD_REQUEST).json({
+        ...base,
+        message: "Too many files uploaded.",
+        error: { code: err.code },
+      });
+      break;
+
+    case "LIMIT_UNEXPECTED_FILE":
+      res.status(HTTP_STATUS.BAD_REQUEST).json({
+        ...base,
+        message: "Unexpected field in the upload form.",
+        error: { code: err.code, field: err.field },
+      });
+      break;
+
+    default:
+      res.status(HTTP_STATUS.BAD_REQUEST).json({
+        ...base,
+        message: "Upload error.",
+        error: { code: err.code, message: err.message },
+      });
+  }
 };

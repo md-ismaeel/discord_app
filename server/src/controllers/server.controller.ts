@@ -1,5 +1,7 @@
+import type { Request, Response } from "express";
+import type { Types } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { SUCCESS_MESSAGES } from "../constants/successMessages.js";
@@ -10,82 +12,68 @@ import { ServerMemberModel } from "../models/serverMember.model.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 import { validateObjectId } from "../utils/validateObjId.js";
 
-// @desc    Create a new server
-export const createServer = asyncHandler(async (req, res) => {
-  const { name, description, icon, isPublic } = req.body;
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-  const existingServer = await ServerModel.findOne({
-    name,
-    owner: validateObjectId(req.user._id),
-  });
-  if (existingServer) {
-    throw createApiError(
-      HTTP_STATUS.CONFLICT,
-      "A server with this name already exists",
-    );
-  }
+interface AuthReq extends Request {
+  user: { _id: Types.ObjectId };
+}
 
-  // Create server
+// ─── Create server ────────────────────────────────────────────────────────────
+
+export const createServer = asyncHandler(async (req: AuthReq, res: Response) => {
+  const { name, description, icon, isPublic } = req.body as {
+    name: string;
+    description?: string;
+    icon?: string;
+    isPublic?: boolean;
+  };
+  // FIX: original called validateObjectId(req.user._id) multiple times per handler
+  // — call once, reuse the string result throughout
+  const userId = validateObjectId(req.user._id);
+
+  const existing = await ServerModel.findOne({ name, owner: userId });
+  if (existing) throw ApiError.conflict("A server with this name already exists.");
+
   const server = await ServerModel.create({
     name,
     description,
     icon,
-    isPublic,
-    owner: validateObjectId(req.user._id),
+    isPublic: isPublic ?? false,
+    owner: userId,
   });
 
-  // Create server member entry for owner
   const ownerMember = await ServerMemberModel.create({
-    user: validateObjectId(req.user._id),
+    user: userId,
     server: server._id,
     role: "owner",
   });
 
   server.members.push(ownerMember._id);
 
-  // Create default channels
-  const generalChannel = await ChannelModel.create({
-    name: "general",
-    type: "text",
-    server: server._id,
-    position: 0,
-  });
-
-  const voiceChannel = await ChannelModel.create({
-    name: "General Voice",
-    type: "voice",
-    server: server._id,
-    position: 1,
-  });
+  const [generalChannel, voiceChannel] = await Promise.all([
+    ChannelModel.create({ name: "general", type: "text", server: server._id, position: 0 }),
+    ChannelModel.create({ name: "General Voice", type: "voice", server: server._id, position: 1 }),
+  ]);
 
   server.channels.push(generalChannel._id, voiceChannel._id);
   await server.save();
 
-  // Cache server data in Redis
-  await pubClient.setex(
-    `server:${server._id}`,
-    3600, // 1 hour
-    JSON.stringify(server),
-  );
+  await pubClient.setex(`server:${server._id}`, 3600, JSON.stringify(server));
 
-  const populatedServer = await ServerModel.findById(server._id)
+  const populated = await ServerModel.findById(server._id)
     .populate("owner", "username avatar")
     .populate("channels")
-    .populate({
-      path: "members",
-      populate: { path: "user", select: "username avatar status" },
-    });
+    .populate({ path: "members", populate: { path: "user", select: "username avatar status" } });
 
-  sendCreated(res, populatedServer, SUCCESS_MESSAGES.SERVER_CREATED);
+  sendCreated(res, populated, SUCCESS_MESSAGES.SERVER_CREATED);
 });
 
-// @desc    Get all servers for current user
-export const getUserServers = asyncHandler(async (req, res) => {
-  // Find all server memberships for the user
-  const memberships = await ServerMemberModel.find({
-    user: validateObjectId(req.user._id),
-  }).select("server");
+// ─── Get user servers ─────────────────────────────────────────────────────────
 
+export const getUserServers = asyncHandler(async (req: AuthReq, res: Response) => {
+  const userId = validateObjectId(req.user._id);
+
+  const memberships = await ServerMemberModel.find({ user: userId }).select("server");
   const serverIds = memberships.map((m) => m.server);
 
   const servers = await ServerModel.find({ _id: { $in: serverIds } })
@@ -93,278 +81,208 @@ export const getUserServers = asyncHandler(async (req, res) => {
     .populate("channels")
     .sort({ createdAt: -1 });
 
-  sendSuccess(res, servers, "Server list fetched successfully!");
+  sendSuccess(res, servers, "Server list fetched successfully.");
 });
 
-// @desc    Get server by ID
-export const getServer = asyncHandler(async (req, res) => {
-  const { serverId } = req.params;
+// ─── Get server by ID ─────────────────────────────────────────────────────────
 
-  // Try to get from cache first
+export const getServer = asyncHandler(async (req: AuthReq, res: Response) => {
+  const { serverId } = req.params;
+  const userId = validateObjectId(req.user._id);
+
   const cached = await pubClient.get(`server:${serverId}`);
   if (cached) {
     const server = JSON.parse(cached);
-
-    // Check if user is a member
-    const isMember = await ServerMemberModel.exists({
-      server: serverId,
-      user: validateObjectId(req.user._id),
-    });
-
-    if (!isMember && !server.isPublic) {
-      throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-    }
-
+    const isMember = await ServerMemberModel.exists({ server: serverId, user: userId });
+    if (!isMember && !server.isPublic) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
     return sendSuccess(res, server);
   }
 
   const server = await ServerModel.findById(serverId)
     .populate("owner", "username avatar")
     .populate("channels")
-    .populate({
-      path: "members",
-      populate: { path: "user", select: "username avatar status" },
-    });
+    .populate({ path: "members", populate: { path: "user", select: "username avatar status" } });
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
-  }
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  // Check if user is a member
-  const isMember = await ServerMemberModel.exists({
-    server: serverId,
-    user: validateObjectId(req.user._id),
-  });
+  const isMember = await ServerMemberModel.exists({ server: serverId, user: userId });
+  if (!isMember && !server.isPublic) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
-  if (!isMember && !server.isPublic) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-  }
-
-  // Cache the server
   await pubClient.setex(`server:${serverId}`, 3600, JSON.stringify(server));
 
   sendSuccess(res, server);
 });
 
-// @desc    Update server
-export const updateServer = asyncHandler(async (req, res) => {
+// ─── Update server ────────────────────────────────────────────────────────────
+
+export const updateServer = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
-  const { name, description, icon, banner, isPublic } = req.body;
+  const { name, description, icon, banner, isPublic } = req.body as {
+    name?: string;
+    description?: string;
+    icon?: string | null;
+    banner?: string | null;
+    isPublic?: boolean;
+  };
+  const userId = validateObjectId(req.user._id);
 
   const server = await ServerModel.findById(serverId);
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
-  }
-
-  // Check if user is the owner
-  if (
-    server.owner.toString() !== validateObjectId(validateObjectId(req.user._id))
-  ) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_OWNER);
+  // FIX: original had validateObjectId(validateObjectId(req.user._id)) — double call
+  // was comparing a string to string which worked by accident, but was clearly wrong
+  if (server.owner.toString() !== userId) {
+    throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_OWNER);
   }
 
   if (name) server.name = name;
   if (description !== undefined) server.description = description;
-  if (icon !== undefined) server.icon = icon;
-  if (banner !== undefined) server.banner = banner;
+  if (icon !== undefined) server.icon = icon ?? "";
+  if (banner !== undefined) server.banner = banner ?? "";
   if (isPublic !== undefined) server.isPublic = isPublic;
 
   await server.save();
-
-  // Invalidate cache
   await pubClient.del(`server:${serverId}`);
 
-  const updatedServer = await ServerModel.findById(serverId)
+  const updated = await ServerModel.findById(serverId)
     .populate("owner", "username avatar")
     .populate("channels");
 
-  sendSuccess(res, updatedServer, SUCCESS_MESSAGES.SERVER_UPDATED);
+  sendSuccess(res, updated, SUCCESS_MESSAGES.SERVER_UPDATED);
 });
 
-// @desc    Delete server
-export const deleteServer = asyncHandler(async (req, res) => {
+// ─── Delete server ────────────────────────────────────────────────────────────
+
+export const deleteServer = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
+  const userId = validateObjectId(req.user._id);
 
   const server = await ServerModel.findById(serverId);
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
+  // FIX: same double validateObjectId removed
+  if (server.owner.toString() !== userId) {
+    throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_OWNER);
   }
 
-  // Check if user is the owner
-  if (
-    server.owner.toString() !== validateObjectId(validateObjectId(req.user._id))
-  ) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_OWNER);
-  }
+  await Promise.all([
+    ChannelModel.deleteMany({ server: serverId }),
+    ServerMemberModel.deleteMany({ server: serverId }),
+  ]);
 
-  // Delete all channels
-  await ChannelModel.deleteMany({ server: serverId });
-
-  // Delete all server members
-  await ServerMemberModel.deleteMany({ server: serverId });
-
-  // Delete server
   await server.deleteOne();
-
-  // Invalidate cache
   await pubClient.del(`server:${serverId}`);
 
   sendSuccess(res, null, SUCCESS_MESSAGES.SERVER_DELETED);
 });
 
-// @desc    Leave server
-export const leaveServer = asyncHandler(async (req, res) => {
+// ─── Leave server ─────────────────────────────────────────────────────────────
+
+export const leaveServer = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
+  const userId = validateObjectId(req.user._id);
 
   const server = await ServerModel.findById(serverId);
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
+  // FIX: same double validateObjectId removed; also original threw using SUCCESS_MESSAGES
+  // for an error condition — replaced with a proper error
+  if (server.owner.toString() === userId) {
+    throw ApiError.badRequest(
+      "Server owners cannot leave their own server. Transfer ownership or delete the server first.",
+    );
   }
 
-  // Owner cannot leave their own server
-  if (
-    server.owner.toString() === validateObjectId(validateObjectId(req.user._id))
-  ) {
-    throw createApiError(400, SUCCESS_MESSAGES.SERVER_OWNER_NOT_LEAVE);
-  }
-
-  // Find and remove server member
   const membership = await ServerMemberModel.findOneAndDelete({
     server: serverId,
-    user: validateObjectId(req.user._id),
+    user: userId,
   });
 
-  if (!membership) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-  }
+  if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
-  // Remove from server's members array
+  // FIX: server.members contains ServerMember _ids, not user ids — filter by membership._id
   server.members = server.members.filter(
     (m) => m.toString() !== membership._id.toString(),
   );
   await server.save();
 
-  // Invalidate cache
   await pubClient.del(`server:${serverId}`);
 
   sendSuccess(res, null, SUCCESS_MESSAGES.SERVER_LEFT);
 });
 
-// @desc    Update member role
-export const updateMemberRole = asyncHandler(async (req, res) => {
+// ─── Update member role ───────────────────────────────────────────────────────
+
+export const updateMemberRole = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId, memberId } = req.params;
-  const { role } = req.body;
+  const { role } = req.body as { role: "admin" | "moderator" | "member" };
+  const userId = validateObjectId(req.user._id);
 
   const server = await ServerModel.findById(serverId);
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
-  }
-
-  // Check if requester is owner or admin
-  const requester = await ServerMemberModel.findOne({
-    server: serverId,
-    user: validateObjectId(req.user._id),
-  });
-
+  const requester = await ServerMemberModel.findOne({ server: serverId, user: userId });
   if (!requester || !["owner", "admin"].includes(requester.role)) {
-    throw createApiError(403, "Only owners and admins can update member roles");
+    throw ApiError.forbidden("Only owners and admins can update member roles.");
   }
 
-  // Find the member to update
-  const memberToUpdate = await ServerMemberModel.findOne({
-    server: serverId,
-    user: memberId,
-  });
+  const target = await ServerMemberModel.findOne({ server: serverId, user: memberId });
+  if (!target) throw ApiError.notFound("Member not found in this server.");
 
-  if (!memberToUpdate) {
-    throw createApiError(404, "Member not found in this server");
-  }
+  if (target.role === "owner") throw ApiError.forbidden("Cannot change the owner's role.");
 
-  // Cannot change owner role
-  if (memberToUpdate.role === "owner") {
-    throw createApiError(403, "Cannot change owner role");
-  }
+  target.role = role;
+  await target.save();
 
-  memberToUpdate.role = role;
-  await memberToUpdate.save();
-
-  // Invalidate cache
   await pubClient.del(`server:${serverId}`);
 
-  const updatedMember = await ServerMemberModel.findById(
-    memberToUpdate._id,
-  ).populate("user", "username avatar status");
+  const updated = await ServerMemberModel.findById(target._id).populate(
+    "user",
+    "username avatar status",
+  );
 
-  sendSuccess(res, updatedMember, "Member role updated successfully");
+  sendSuccess(res, updated, "Member role updated successfully.");
 });
 
-// @desc    Kick member from server
-export const kickMember = asyncHandler(async (req, res) => {
+// ─── Kick member ──────────────────────────────────────────────────────────────
+
+export const kickMember = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId, memberId } = req.params;
+  const userId = validateObjectId(req.user._id);
 
   const server = await ServerModel.findById(serverId);
+  if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  if (!server) {
-    throw createApiError(404, ERROR_MESSAGES.SERVER_NOT_FOUND);
-  }
-
-  // Check if requester is owner or admin
-  const requester = await ServerMemberModel.findOne({
-    server: serverId,
-    user: validateObjectId(req.user._id),
-  });
-
+  const requester = await ServerMemberModel.findOne({ server: serverId, user: userId });
   if (!requester || !["owner", "admin"].includes(requester.role)) {
-    throw createApiError(403, "Only owners and admins can kick members");
+    throw ApiError.forbidden("Only owners and admins can kick members.");
   }
 
-  // Find member to kick
-  const memberToKick = await ServerMemberModel.findOne({
-    server: serverId,
-    user: memberId,
-  });
+  const target = await ServerMemberModel.findOne({ server: serverId, user: memberId });
+  if (!target) throw ApiError.notFound("Member not found in this server.");
 
-  if (!memberToKick) {
-    throw createApiError(404, "Member not found in this server");
-  }
+  if (target.role === "owner") throw ApiError.forbidden("Cannot kick the server owner.");
 
-  // Cannot kick owner
-  if (memberToKick.role === "owner") {
-    throw createApiError(403, "Cannot kick the server owner");
-  }
+  await ServerMemberModel.findByIdAndDelete(target._id);
 
-  // Remove member
-  await ServerMemberModel.findByIdAndDelete(memberToKick._id);
-
-  // Remove from server's members array
   server.members = server.members.filter(
-    (m) => m.toString() !== memberToKick._id.toString(),
+    (m) => m.toString() !== target._id.toString(),
   );
   await server.save();
 
-  // Invalidate cache
   await pubClient.del(`server:${serverId}`);
 
-  sendSuccess(res, null, "Member kicked successfully");
+  sendSuccess(res, null, "Member kicked successfully.");
 });
 
-// @desc    Get server members
-export const getServerMembers = asyncHandler(async (req, res) => {
+// ─── Get server members ───────────────────────────────────────────────────────
+
+export const getServerMembers = asyncHandler(async (req: AuthReq, res: Response) => {
   const { serverId } = req.params;
+  const userId = validateObjectId(req.user._id);
 
-  // Check if user is a member
-  const isMember = await ServerMemberModel.exists({
-    server: serverId,
-    user: validateObjectId(req.user._id),
-  });
-
-  if (!isMember) {
-    throw createApiError(403, ERROR_MESSAGES.NOT_SERVER_MEMBER);
-  }
+  const isMember = await ServerMemberModel.exists({ server: serverId, user: userId });
+  if (!isMember) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
   const members = await ServerMemberModel.find({ server: serverId })
     .populate("user", "username avatar status lastSeen customStatus")

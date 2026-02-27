@@ -1,34 +1,41 @@
+import type { Request, Response } from "express";
+import type { Types } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createApiError } from "../utils/ApiError.js";
+import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { DirectMessageModel } from "../models/directMessage.model.js";
 import { UserModel } from "../models/user.model.js";
 import { pubClient } from "../config/redis.config.js";
 import { emitToUser } from "../socket/socketHandler.js";
+import { validateObjectId } from "../utils/validateObjId.js";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AuthReq extends Request {
+  user: { _id: Types.ObjectId };
+}
+
+// ─── Cache helpers ────────────────────────────────────────────────────────────
 
 const CACHE_TTL = {
-  CONVERSATIONS: 300, // 5 minutes
-  MESSAGES: 300, // 5 minutes
-  UNREAD: 180, // 3 minutes
-};
+  CONVERSATIONS: 300,
+  MESSAGES: 300,
+  UNREAD: 180,
+} as const;
 
 const getCacheKey = {
-  conversation: (user1Id, user2Id, page, limit) => {
-    const sortedIds = [user1Id, user2Id].sort();
-    return `dm:${sortedIds[0]}:${sortedIds[1]}:${page}:${limit}`;
+  conversation: (user1Id: string, user2Id: string, page: number, limit: number): string => {
+    const [a, b] = [user1Id, user2Id].sort();
+    return `dm:${a}:${b}:${page}:${limit}`;
   },
-  conversations: (userId) => `user:${userId}:conversations`,
-  unreadCount: (userId) => `user:${userId}:unread`,
+  conversations: (userId: string): string => `user:${userId}:conversations`,
+  unreadCount: (userId: string): string => `user:${userId}:unread`,
 };
 
-const invalidateDMCache = async (user1Id, user2Id) => {
-  const sortedIds = [user1Id, user2Id].sort();
-
-  // Delete all paginated conversation caches
-  const conversationKeys = await pubClient.keys(
-    `dm:${sortedIds[0]}:${sortedIds[1]}:*`,
-  );
+const invalidateDMCache = async (user1Id: string, user2Id: string): Promise<void> => {
+  const [a, b] = [user1Id, user2Id].sort();
+  const conversationKeys = await pubClient.keys(`dm:${a}:${b}:*`);
   const keysToDelete = [
     ...conversationKeys,
     getCacheKey.conversations(user1Id),
@@ -36,112 +43,99 @@ const invalidateDMCache = async (user1Id, user2Id) => {
     getCacheKey.unreadCount(user1Id),
     getCacheKey.unreadCount(user2Id),
   ];
-
-  if (keysToDelete.length > 0) {
-    await pubClient.del(...keysToDelete);
-  }
+  if (keysToDelete.length > 0) await pubClient.del(...keysToDelete);
 };
 
-//    Send a direct message
-export const sendDirectMessage = asyncHandler(async (req, res) => {
+// ─── Send DM ──────────────────────────────────────────────────────────────────
+
+export const sendDirectMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const senderId = validateObjectId(req.user._id);
   const { recipientId } = req.params;
-  const { content, attachments } = req.body;
+  const { content, attachments } = req.body as {
+    content: string;
+    attachments?: unknown[];
+  };
 
   if (senderId === recipientId) {
-    throw createApiError(400, "Cannot send message to yourself");
+    throw ApiError.badRequest("Cannot send a message to yourself.");
   }
 
-  // Check if recipient exists
   const recipient = await UserModel.findById(recipientId);
-  if (!recipient) {
-    throw createApiError(404, ERROR_MESSAGES.USER_NOT_FOUND);
+  if (!recipient) throw ApiError.notFound(ERROR_MESSAGES.USER_NOT_FOUND);
+
+  if (recipient.blockedUsers?.some((id) => id.toString() === senderId)) {
+    throw ApiError.forbidden("You cannot send messages to this user.");
   }
 
-  // Check if sender is blocked by recipient
-  if (recipient.blockedUsers && recipient.blockedUsers.includes(senderId)) {
-    throw createApiError(403, "You cannot send messages to this user");
-  }
-
-  // Check if recipient is blocked by sender
   const sender = await UserModel.findById(senderId);
-  if (sender.blockedUsers && sender.blockedUsers.includes(recipientId)) {
-    throw createApiError(403, "You have blocked this user");
+  if (!sender) throw ApiError.notFound(ERROR_MESSAGES.USER_NOT_FOUND);
+  if (sender.blockedUsers?.some((id) => id.toString() === recipientId)) {
+    throw ApiError.forbidden("You have blocked this user.");
   }
 
-  // Create direct message
   const directMessage = await DirectMessageModel.create({
     content,
     sender: senderId,
     receiver: recipientId,
-    attachments: attachments || [],
+    attachments: attachments ?? [],
   });
 
-  // Populate sender details
   const populatedMessage = await DirectMessageModel.findById(directMessage._id)
     .populate("sender", "username avatar status")
     .populate("receiver", "username avatar status")
     .lean();
 
-  // Invalidate cache
   await invalidateDMCache(senderId, recipientId);
 
-  // Emit socket event to recipient
-  emitToUser(recipientId, "dm:received", {
-    message: populatedMessage,
-    timestamp: new Date(),
-  });
+  emitToUser(recipientId, "dm:received", { message: populatedMessage, timestamp: new Date() });
+  emitToUser(senderId, "dm:sent", { message: populatedMessage, timestamp: new Date() });
 
-  // Emit to sender (for multi-device sync)
-  emitToUser(senderId, "dm:sent", {
-    message: populatedMessage,
-    timestamp: new Date(),
-  });
-
-  sendCreated(res, populatedMessage, "Message sent successfully");
+  sendCreated(res, populatedMessage, "Message sent successfully.");
 });
 
-//    Get conversation between two users (paginated)
-export const getConversation = asyncHandler(async (req, res) => {
+// ─── Get conversation (paginated) ─────────────────────────────────────────────
+
+export const getConversation = asyncHandler(async (req: AuthReq, res: Response) => {
   const currentUserId = validateObjectId(req.user._id);
   const { userId } = req.params;
-  const { page = 1, limit = 50, before } = req.query;
+  // FIX: query params are always strings — parse explicitly
+  const page = parseInt((req.query.page as string) ?? "1", 10);
+  const limit = parseInt((req.query.limit as string) ?? "50", 10);
+  const before = req.query.before as string | undefined;
 
-  // Verify other user exists
   const otherUser = await UserModel.findById(userId);
-  if (!otherUser) {
-    throw createApiError(404, ERROR_MESSAGES.USER_NOT_FOUND);
-  }
+  if (!otherUser) throw ApiError.notFound(ERROR_MESSAGES.USER_NOT_FOUND);
 
   const cacheKey = getCacheKey.conversation(currentUserId, userId, page, limit);
 
-  // Try cache first (only if not using 'before' cursor)
   if (!before) {
     const cached = await pubClient.get(cacheKey);
-    if (cached) {
-      return sendSuccess(res, JSON.parse(cached));
-    }
+    if (cached) return sendSuccess(res, JSON.parse(cached));
   }
 
   const skip = (page - 1) * limit;
-  const query = {
+
+  // FIX: original mutated a shared query object then added createdAt — build properly typed
+  interface DmQuery {
+    $or: Array<{ sender: string; receiver: string }>;
+    createdAt?: { $lt: Date };
+  }
+
+  const query: DmQuery = {
     $or: [
       { sender: currentUserId, receiver: userId },
       { sender: userId, receiver: currentUserId },
     ],
   };
 
-  // If 'before' cursor is provided
   if (before) {
     const beforeMessage = await DirectMessageModel.findById(before);
-    if (beforeMessage) {
-      query.createdAt = { $lt: beforeMessage.createdAt };
-    }
+    if (beforeMessage) query.createdAt = { $lt: beforeMessage.createdAt as Date };
   }
 
   const messages = await DirectMessageModel.find(query)
     .sort({ createdAt: -1 })
-    .limit(parseInt(limit))
+    .limit(limit)
     .skip(skip)
     .populate("sender", "username avatar status")
     .populate("receiver", "username avatar status")
@@ -155,7 +149,7 @@ export const getConversation = asyncHandler(async (req, res) => {
   });
 
   const result = {
-    messages: messages.reverse(), // Reverse to show oldest first
+    messages: messages.reverse(),
     otherUser: {
       _id: otherUser._id,
       username: otherUser.username,
@@ -164,15 +158,14 @@ export const getConversation = asyncHandler(async (req, res) => {
       customStatus: otherUser.customStatus,
     },
     pagination: {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page,
+      limit,
       total,
       pages: Math.ceil(total / limit),
       hasMore: skip + messages.length < total,
     },
   };
 
-  // Cache the result (only if not using cursor)
   if (!before) {
     await pubClient.setex(cacheKey, CACHE_TTL.MESSAGES, JSON.stringify(result));
   }
@@ -180,30 +173,19 @@ export const getConversation = asyncHandler(async (req, res) => {
   sendSuccess(res, result);
 });
 
-//    Get all conversations for current user
-export const getConversations = asyncHandler(async (req, res) => {
+// ─── Get all conversations ────────────────────────────────────────────────────
+
+export const getConversations = asyncHandler(async (req: AuthReq, res: Response) => {
   const userId = validateObjectId(req.user._id);
   const cacheKey = getCacheKey.conversations(userId);
 
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
-  if (cached) {
-    return sendSuccess(res, JSON.parse(cached));
-  }
+  if (cached) return sendSuccess(res, JSON.parse(cached));
 
-  // Get all unique users the current user has messaged with
-  const sentMessages = await DirectMessageModel.find({ sender: userId })
-    .distinct("receiver")
-    .lean();
+  const sentTo = await DirectMessageModel.find({ sender: userId }).distinct("receiver");
+  const receivedFrom = await DirectMessageModel.find({ receiver: userId }).distinct("sender");
+  const userIds = [...new Set([...sentTo.map(String), ...receivedFrom.map(String)])];
 
-  const receivedMessages = await DirectMessageModel.find({ receiver: userId })
-    .distinct("sender")
-    .lean();
-
-  // Combine and get unique user IDs
-  const userIds = [...new Set([...sentMessages, ...receivedMessages])];
-
-  // Get last message with each user
   const conversations = await Promise.all(
     userIds.map(async (otherUserId) => {
       const lastMessage = await DirectMessageModel.findOne({
@@ -217,212 +199,134 @@ export const getConversations = asyncHandler(async (req, res) => {
         .populate("receiver", "username avatar status")
         .lean();
 
-      // Count unread messages from this user
       const unreadCount = await DirectMessageModel.countDocuments({
         sender: otherUserId,
         receiver: userId,
         isRead: false,
       });
 
-      // Get other user info
       const otherUser = await UserModel.findById(otherUserId)
         .select("username avatar status customStatus lastSeen")
         .lean();
 
-      return {
-        user: otherUser,
-        lastMessage,
-        unreadCount,
-      };
+      return { user: otherUser, lastMessage, unreadCount };
     }),
   );
 
-  // Sort by last message timestamp
+  // FIX: original subtracted Date objects directly — must call .getTime()
   conversations.sort((a, b) => {
-    const timeA = a.lastMessage
-      ? new Date(a.lastMessage.createdAt)
-      : new Date(0);
-    const timeB = b.lastMessage
-      ? new Date(b.lastMessage.createdAt)
-      : new Date(0);
-    return timeB - timeA;
+    const tA = a.lastMessage ? new Date(a.lastMessage.createdAt as Date).getTime() : 0;
+    const tB = b.lastMessage ? new Date(b.lastMessage.createdAt as Date).getTime() : 0;
+    return tB - tA;
   });
 
-  // Cache the result
-  await pubClient.setex(
-    cacheKey,
-    CACHE_TTL.CONVERSATIONS,
-    JSON.stringify(conversations),
-  );
+  await pubClient.setex(cacheKey, CACHE_TTL.CONVERSATIONS, JSON.stringify(conversations));
 
   sendSuccess(res, conversations);
 });
 
-//    Mark messages as read
-export const markAsRead = asyncHandler(async (req, res) => {
+// ─── Mark as read ─────────────────────────────────────────────────────────────
+
+export const markAsRead = asyncHandler(async (req: AuthReq, res: Response) => {
   const currentUserId = validateObjectId(req.user._id);
   const { userId } = req.params;
 
-  // Mark all unread messages from this user as read
   const result = await DirectMessageModel.updateMany(
-    {
-      sender: userId,
-      receiver: currentUserId,
-      isRead: false,
-    },
-    {
-      $set: { isRead: true },
-    },
+    { sender: userId, receiver: currentUserId, isRead: false },
+    { $set: { isRead: true } },
   );
 
-  // Invalidate cache
   await invalidateDMCache(currentUserId, userId);
 
-  // Emit socket event to sender (so they know their messages were read)
-  emitToUser(userId, "dm:read", {
-    readBy: currentUserId,
-    timestamp: new Date(),
-  });
+  emitToUser(userId, "dm:read", { readBy: currentUserId, timestamp: new Date() });
 
-  sendSuccess(res, { count: result.modifiedCount }, "Messages marked as read");
+  sendSuccess(res, { count: result.modifiedCount }, "Messages marked as read.");
 });
 
-//    Edit a direct message
-export const editDirectMessage = asyncHandler(async (req, res) => {
+// ─── Edit DM ──────────────────────────────────────────────────────────────────
+
+export const editDirectMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
-  const { content } = req.body;
+  const { content } = req.body as { content: string };
   const userId = validateObjectId(req.user._id);
 
   const message = await DirectMessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check if user is the sender
   if (message.sender.toString() !== userId) {
-    throw createApiError(403, "You can only edit your own messages");
+    throw ApiError.forbidden("You can only edit your own messages.");
   }
 
   message.content = content;
   message.isEdited = true;
   message.editedAt = new Date();
-
   await message.save();
 
-  const updatedMessage = await DirectMessageModel.findById(messageId)
+  const updated = await DirectMessageModel.findById(messageId)
     .populate("sender", "username avatar status")
     .populate("receiver", "username avatar status")
     .lean();
 
-  // Invalidate cache
-  await invalidateDMCache(
-    message.sender.toString(),
-    message.receiver.toString(),
-  );
+  await invalidateDMCache(message.sender.toString(), message.receiver.toString());
 
-  // Emit socket events
-  emitToUser(message.receiver.toString(), "dm:updated", {
-    message: updatedMessage,
-    timestamp: new Date(),
-  });
+  emitToUser(message.receiver.toString(), "dm:updated", { message: updated, timestamp: new Date() });
+  emitToUser(userId, "dm:updated", { message: updated, timestamp: new Date() });
 
-  emitToUser(userId, "dm:updated", {
-    message: updatedMessage,
-    timestamp: new Date(),
-  });
-
-  sendSuccess(res, updatedMessage, "Message updated successfully");
+  sendSuccess(res, updated, "Message updated successfully.");
 });
 
-//    Delete a direct message
-export const deleteDirectMessage = asyncHandler(async (req, res) => {
+// ─── Delete DM ────────────────────────────────────────────────────────────────
+
+export const deleteDirectMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   const { messageId } = req.params;
   const userId = validateObjectId(req.user._id);
 
   const message = await DirectMessageModel.findById(messageId);
+  if (!message) throw ApiError.notFound("Message not found.");
 
-  if (!message) {
-    throw createApiError(404, "Message not found");
-  }
-
-  // Check if user is the sender
   if (message.sender.toString() !== userId) {
-    throw createApiError(403, "You can only delete your own messages");
+    throw ApiError.forbidden("You can only delete your own messages.");
   }
 
   const receiverId = message.receiver.toString();
-
   await message.deleteOne();
-
-  // Invalidate cache
   await invalidateDMCache(userId, receiverId);
 
-  // Emit socket events
-  emitToUser(receiverId, "dm:deleted", {
-    messageId,
-    deletedBy: userId,
-    timestamp: new Date(),
-  });
+  const payload = { messageId, deletedBy: userId, timestamp: new Date() };
+  emitToUser(receiverId, "dm:deleted", payload);
+  emitToUser(userId, "dm:deleted", payload);
 
-  emitToUser(userId, "dm:deleted", {
-    messageId,
-    deletedBy: userId,
-    timestamp: new Date(),
-  });
-
-  sendSuccess(res, null, "Message deleted successfully");
+  sendSuccess(res, null, "Message deleted successfully.");
 });
 
-//    Get unread message count
-export const getUnreadCount = asyncHandler(async (req, res) => {
+// ─── Unread count ─────────────────────────────────────────────────────────────
+
+export const getUnreadCount = asyncHandler(async (req: AuthReq, res: Response) => {
   const userId = validateObjectId(req.user._id);
   const cacheKey = getCacheKey.unreadCount(userId);
 
-  // Try cache first
   const cached = await pubClient.get(cacheKey);
-  if (cached) {
-    return sendSuccess(res, JSON.parse(cached));
-  }
+  if (cached) return sendSuccess(res, JSON.parse(cached));
 
-  const unreadCount = await DirectMessageModel.countDocuments({
-    receiver: userId,
-    isRead: false,
-  });
+  const total = await DirectMessageModel.countDocuments({ receiver: userId, isRead: false });
 
-  // Get unread count per conversation
-  const unreadBySender = await DirectMessageModel.aggregate([
-    {
-      $match: {
-        receiver: userId,
-        isRead: false,
-      },
-    },
-    {
-      $group: {
-        _id: "$sender",
-        count: { $sum: 1 },
-      },
-    },
+  const byConversation = await DirectMessageModel.aggregate([
+    { $match: { receiver: userId, isRead: false } },
+    { $group: { _id: "$sender", count: { $sum: 1 } } },
   ]);
 
-  const result = {
-    total: unreadCount,
-    byConversation: unreadBySender,
-  };
-
-  // Cache the result
+  const result = { total, byConversation };
   await pubClient.setex(cacheKey, CACHE_TTL.UNREAD, JSON.stringify(result));
 
   sendSuccess(res, result);
 });
 
-//    Delete entire conversation with a user
-export const deleteConversation = asyncHandler(async (req, res) => {
+// ─── Delete conversation ──────────────────────────────────────────────────────
+
+export const deleteConversation = asyncHandler(async (req: AuthReq, res: Response) => {
   const currentUserId = validateObjectId(req.user._id);
   const { userId } = req.params;
 
-  // Delete all messages between the two users
   await DirectMessageModel.deleteMany({
     $or: [
       { sender: currentUserId, receiver: userId },
@@ -430,10 +334,9 @@ export const deleteConversation = asyncHandler(async (req, res) => {
     ],
   });
 
-  // Invalidate cache
   await invalidateDMCache(currentUserId, userId);
 
-  sendSuccess(res, null, "Conversation deleted successfully");
+  sendSuccess(res, null, "Conversation deleted successfully.");
 });
 
 export default {

@@ -1,6 +1,6 @@
 // types/apiError.ts
 export interface ApiErrorType extends Error {
   statusCode: number;
-  errors?: any;
+  errors?: unknown[];
   success: boolean;
 }
