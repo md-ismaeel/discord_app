@@ -1,0 +1,54 @@
+Data Model Architecture
+The application uses MongoDB with Mongoose to define the data structures. Here is an overview of how the models connect to each other.
+
+Entity-Relationship Diagram
+⚠️ Failed to render Mermaid diagram: Parse error on line 5
+erDiagram
+    User ||--o{ Server : owns
+    User ||--o{ ServerMember : "represented by"
+    User ||--o{ Message : authors
+    User ||--o{ DirectMessage : sends/receives
+    User ||--o{ FriendRequest : sends/receives
+    
+    Server ||--o{ Channel : contains
+    Server ||--o{ Role : defines
+    Server ||--o{ ServerMember : contains
+    Server ||--o{ Invite : issues
+    
+    Channel ||--o{ Message : contains
+    
+    ServerMember }|--|| User : references
+    ServerMember }|--|| Server : references
+    ServerMember ||--o{ Role : "assigned roles"
+    
+    Message }|--|| User : author
+    Message }|--|| Channel : channel
+    
+    DirectMessage }|--|| User : sender
+    DirectMessage }|--|| User : receiver
+Key Flows & Connections
+1. User & Identity (User)
+The User model is central. It stores authentication details and profile data.
+
+Relationships:
+Users can be friends (friends array of User IDs).
+Users can block others (blockedUsers).
+2. Servers & Communities (Server, ServerMember)
+A Server is a community. Users don't belong directly to a server; they are linked via a ServerMember document.
+
+Why this design? This allows storing server-specific user data (nickname, roles, mute status) separate from the global user profile.
+Flow: User -> ServerMember -> Server.
+3. Channels & Messaging (Channel, Message)
+Messages belong to a Channel, and a Channel belongs to a Server.
+Flow to find messages: Server -> Channels -> Messages.
+Messages reference the User (author) and the Channel.
+4. Roles & Permissions (Role)
+Roles are defined per Server.
+A ServerMember has an array of Role IDs.
+Logic: To check permissions, you fetch the ServerMember for a user in a specific server, populate their roles, and check the permissions flags on those roles.
+5. Private Messaging (DirectMessage)
+Independent of servers.
+Links two User documents directly (sender and receiver).
+6. Invites (Invite)
+Generated for a specific Server by a User.
+Used to create a new ServerMember entry for the joining user.

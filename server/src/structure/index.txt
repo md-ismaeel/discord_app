@@ -1,0 +1,72 @@
+src/
+├── config/
+│   ├── database.config.js
+│   ├── env.config.js
+│   ├── redis.config.js
+│   └── passport.config.js
+├── controllers/
+│   ├── auth.controller.js
+│   ├── user.controller.js
+│   ├── server.controller.js
+│   ├── channel.controller.js
+│   ├── message.controller.js
+│   ├── directMessage.controller.js
+│   ├── friendRequest.controller.js
+│   ├── invite.controller.js
+│   ├── role.controller.js
+│   └── serverMember.controller.js
+├── middlewares/
+│   ├── auth.middleware.js
+│   ├── error.middleware.js
+│   ├── rateLimit.middleware.js
+│   ├── upload.middleware.js
+│   └── validate.middleware.js
+├── models/
+│   ├── user.model.js
+│   ├── server.model.js
+│   ├── channel.model.js
+│   ├── message.model.js
+│   ├── directMessage.model.js
+│   ├── friendRequest.model.js
+│   ├── invite.model.js
+│   ├── role.model.js
+│   └── serverMember.model.js
+├── routes/
+│   ├── index.js
+│   ├── auth.routes.js
+│   ├── user.routes.js
+│   ├── server.routes.js
+│   ├── message.routes.js
+│   ├── directMessage.routes.js
+│   ├── friendRequest.routes.js
+│   ├── invite.routes.js
+│   └── role.routes.js
+├── services/
+│   ├── cloudinary.service.js
+│   ├── s3.service.js
+│   └── email.service.js
+├── socket/
+│   └── socketHandler.js
+├── types/
+│   ├── express.d.js
+│   ├── models.js
+│   ├── api.js
+│   └── socket.js
+├── utils/
+│   ├── ApiError.js
+│   ├── asyncHandler.js
+│   ├── response.js
+│   ├── jwt.js
+│   ├── bcrypt.js
+│   └── validateObjId.js
+├── validations/
+│   ├── auth.validation.js
+│   ├── server.validation.js
+│   ├── channel.validation.js
+│   └── message.validation.js
+├── constants/
+│   ├── errorMessages.js
+│   ├── successMessages.js
+│   └── httpStatus.js
+├── app.js
+└── server.js

@@ -1,0 +1,82 @@
+discord/
+├── src/
+│   ├── config/
+│   │   ├── database.config.ts
+│   │   ├── env.config.ts
+│   │   ├── redis.config.ts
+│   │   └── passport.config.ts
+│   ├── constants/
+│   │   ├── errorMessages.ts
+│   │   ├── successMessages.ts
+│   │   └── httpStatus.ts
+│   ├── controllers/
+│   │   ├── auth.controller.ts
+│   │   ├── user.controller.ts
+│   │   ├── server.controller.ts
+│   │   ├── channel.controller.ts
+│   │   ├── message.controller.ts
+│   │   ├── directMessage.controller.ts
+│   │   ├── friendRequest.controller.ts
+│   │   ├── invite.controller.ts
+│   │   ├── role.controller.ts
+│   │   └── serverMember.controller.ts
+│   ├── middlewares/
+│   │   ├── auth.middleware.ts
+│   │   ├── errorHandler.ts
+│   │   ├── rateLimit.middleware.ts
+│   │   ├── upload.middleware.ts
+│   │   └── validate.middleware.ts
+│   ├── models/
+│   │   ├── user.model.ts
+│   │   ├── server.model.ts
+│   │   ├── serverMember.model.ts
+│   │   ├── channel.model.ts
+│   │   ├── message.model.ts
+│   │   ├── directMessage.model.ts
+│   │   ├── friendRequest.model.ts
+│   │   ├── invite.model.ts
+│   │   └── role.model.ts
+│   ├── routes/
+│   │   ├── index.ts
+│   │   ├── auth.routes.ts
+│   │   ├── user.routes.ts
+│   │   ├── server.routes.ts
+│   │   ├── channel.routes.ts
+│   │   ├── message.routes.ts
+│   │   ├── directMessage.routes.ts
+│   │   ├── friendRequest.routes.ts
+│   │   ├── invite.routes.ts
+│   │   └── role.routes.ts
+│   ├── services/
+│   │   ├── cloudinary.service.ts
+│   │   └── s3.service.ts
+│   ├── socket/
+│   │   └── socketHandler.ts
+│   ├── types/
+│   │   ├── index.ts
+│   │   ├── express.d.ts
+│   │   ├── models.ts
+│   │   ├── api.ts
+│   │   ├── socket.ts
+│   │   └── passport-github2.d.ts
+│   ├── utils/
+│   │   ├── ApiError.ts
+│   │   ├── asyncHandler.ts
+│   │   ├── response.ts
+│   │   ├── jwt.ts
+│   │   ├── bcrypt.ts
+│   │   ├── redis.ts
+│   │   └── validateObjId.ts
+│   ├── validations/
+│   │   ├── auth.validation.ts
+│   │   ├── user.validation.ts
+│   │   ├── server.validation.ts
+│   │   ├── channel.validation.ts
+│   │   ├── message.validation.ts
+│   │   └── common.validation.ts
+│   └── server.ts
+├── .env
+├── .gitignore
+├── nodemon.json
+├── package.json
+└── tsconfig.json
