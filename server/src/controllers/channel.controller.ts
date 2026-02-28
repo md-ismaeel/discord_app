@@ -1,11 +1,12 @@
 import type { Request, Response } from "express";
 import type { Types } from "mongoose";
-import type { IUser } from "../types/models.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { sendSuccess, sendCreated } from "../utils/response.js";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
 import { SUCCESS_MESSAGES } from "../constants/successMessages.js";
+import type { IChannel } from "../types/models.js";
+import type { IServerMember } from "../types/models.js";
 import { ChannelModel } from "../models/channel.model.js";
 import { ServerModel } from "../models/server.model.js";
 import { ServerMemberModel } from "../models/serverMember.model.js";
@@ -14,31 +15,22 @@ import { getIO } from "../socket/socketHandler.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 import { validateObjectId } from "../utils/validateObjId.js";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-type MemberRole = "owner" | "admin" | "moderator" | "member";
-
-interface AuthReq extends Request {
-  user: IUser;
-}
-
-// ─── Cache helpers ────────────────────────────────────────────────────────────
-
-const CACHE_TTL = {
-  CHANNEL: 1800,
-  CHANNELS: 1800,
-} as const;
+const CACHE_TTL = { CHANNEL: 1800, CHANNELS: 1800 } as const;
 
 const getCacheKey = {
-  channel: (channelId: string): string => `channel:${channelId}`,
-  serverChannels: (serverId: string): string => `server:${serverId}:channels`,
+  channel: (id: string) => `channel:${id}`,
+  serverChannels: (id: string) => `server:${id}:channels`,
 };
+
+// ─── Cache invalidation ───────────────────────────────────────────────────────
 
 const invalidateChannelCache = async (
   serverId: Types.ObjectId | string,
-  channelId: string | null = null,
+  channelId?: string,
 ): Promise<void> => {
-  const keys: string[] = [
+  const keys = [
     getCacheKey.serverChannels(serverId.toString()),
     `server:${serverId}`,
   ];
@@ -47,13 +39,14 @@ const invalidateChannelCache = async (
 };
 
 // ─── Permission helper ────────────────────────────────────────────────────────
+// IServerMember.role: "owner" | "admin" | "moderator" | "member"
 
 const checkMemberPermission = async (
   serverId: Types.ObjectId | string,
-  userId: Types.ObjectId | string,
-  requiredRoles: MemberRole[] = ["owner", "admin"],
-) => {
-  const membership = await ServerMemberModel.findOne({
+  userId: string,
+  requiredRoles: IServerMember["role"][] = ["owner", "admin"],
+): Promise<IServerMember> => {
+  const membership = await ServerMemberModel.findOne<IServerMember>({
     server: serverId,
     user: userId,
   });
@@ -62,7 +55,7 @@ const checkMemberPermission = async (
     throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
   }
 
-  if (!requiredRoles.includes(membership.role as MemberRole)) {
+  if (!requiredRoles.includes(membership.role)) {
     throw ApiError.forbidden(
       `Only ${requiredRoles.join(", ")} can perform this action.`,
     );
@@ -73,19 +66,27 @@ const checkMemberPermission = async (
 
 // ─── Create channel ───────────────────────────────────────────────────────────
 
-export const createChannel = asyncHandler(async (req: AuthReq, res: Response) => {
+export const createChannel = asyncHandler(async (req: Request, res: Response) => {
   const { serverId } = req.params;
-  const { name, type, topic, category, position, isPrivate, allowedRoles } =
-    req.body as {
-      name: string;
-      type: "text" | "voice";
-      topic?: string;
-      category?: string;
-      position?: number;
-      isPrivate?: boolean;
-      allowedRoles?: string[];
-    };
-  const userId = validateObjectId(req.user._id);
+  const {
+    name,
+    type,
+    topic,
+    category,
+    position,
+    isPrivate,
+    allowedRoles,
+  } = req.body as {
+    name: string;
+    type: IChannel["type"];
+    topic?: string;
+    category?: string;
+    position?: number;
+    isPrivate?: boolean;
+    allowedRoles?: string[];
+  };
+
+  const userId = validateObjectId(req.user!._id);
   const io = getIO();
 
   await checkMemberPermission(serverId, userId, ["owner", "admin", "moderator"]);
@@ -93,12 +94,14 @@ export const createChannel = asyncHandler(async (req: AuthReq, res: Response) =>
   const server = await ServerModel.findById(serverId);
   if (!server) throw ApiError.notFound(ERROR_MESSAGES.SERVER_NOT_FOUND);
 
-  const existingChannel = await ChannelModel.findOne({
+  const duplicate = await ChannelModel.findOne({
     server: serverId,
     name: name.toLowerCase(),
   });
-  if (existingChannel) {
-    throw ApiError.conflict("A channel with this name already exists in this server.");
+  if (duplicate) {
+    throw ApiError.conflict(
+      "A channel with this name already exists in this server.",
+    );
   }
 
   const channel = await ChannelModel.create({
@@ -130,12 +133,12 @@ export const createChannel = asyncHandler(async (req: AuthReq, res: Response) =>
 // ─── Get server channels ──────────────────────────────────────────────────────
 
 export const getServerChannels = asyncHandler(async (req: Request, res: Response) => {
-  const authReq = req as AuthReq;
   const { serverId } = req.params;
-  const userId = validateObjectId(authReq.user._id);
+  const userId = validateObjectId(req.user!._id);
   const cacheKey = getCacheKey.serverChannels(serverId);
 
-  const membership = await ServerMemberModel.findOne({
+  // IServerMember — verify membership first
+  const membership = await ServerMemberModel.findOne<IServerMember>({
     server: serverId,
     user: userId,
   });
@@ -144,37 +147,40 @@ export const getServerChannels = asyncHandler(async (req: Request, res: Response
   const cached = await pubClient.get(cacheKey);
   if (cached) return sendSuccess(res, JSON.parse(cached));
 
+  // IChannel[] — lean returns plain objects matching the interface shape
   const channels = await ChannelModel.find({ server: serverId })
     .sort({ position: 1 })
-    .lean();
+    .lean<IChannel[]>();
 
-  const visibleChannels = channels.filter((channel) => {
+  const visible = channels.filter((channel) => {
     if (!channel.isPrivate) return true;
     if (["owner", "admin"].includes(membership.role)) return true;
+    // IChannel.allowedRoles: Types.ObjectId[]
     return (
       channel.allowedRoles.length === 0 ||
       channel.allowedRoles.some((roleId) =>
+        // IServerMember.roles: Types.ObjectId[]
         membership.roles?.some((r) => r.toString() === roleId.toString()),
       )
     );
   });
 
-  await pubClient.setex(cacheKey, CACHE_TTL.CHANNELS, JSON.stringify(visibleChannels));
+  await pubClient.setex(cacheKey, CACHE_TTL.CHANNELS, JSON.stringify(visible));
 
-  sendSuccess(res, visibleChannels, SUCCESS_MESSAGES.CHANNELS_FETCHED);
+  sendSuccess(res, visible, SUCCESS_MESSAGES.CHANNELS_FETCHED);
 });
 
 // ─── Get single channel ───────────────────────────────────────────────────────
 
-export const getChannel = asyncHandler(async (req: AuthReq, res: Response) => {
+export const getChannel = asyncHandler(async (req: Request, res: Response) => {
   const { channelId } = req.params;
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
   const cacheKey = getCacheKey.channel(channelId);
 
   const cached = await pubClient.get(cacheKey);
   if (cached) {
-    const channel = JSON.parse(cached);
-    const membership = await ServerMemberModel.findOne({
+    const channel = JSON.parse(cached) as IChannel;
+    const membership = await ServerMemberModel.findOne<IServerMember>({
       server: channel.server,
       user: userId,
     });
@@ -182,22 +188,20 @@ export const getChannel = asyncHandler(async (req: AuthReq, res: Response) => {
     return sendSuccess(res, channel);
   }
 
-  const channel = await ChannelModel.findById(channelId).lean();
+  const channel = await ChannelModel.findById(channelId).lean<IChannel>();
   if (!channel) throw ApiError.notFound("Channel not found.");
 
-  const membership = await ServerMemberModel.findOne({
+  const membership = await ServerMemberModel.findOne<IServerMember>({
     server: channel.server,
     user: userId,
   });
   if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
   if (channel.isPrivate && !["owner", "admin"].includes(membership.role)) {
-    if (
-      channel.allowedRoles.length > 0 &&
-      !channel.allowedRoles.some((roleId) =>
-        membership.roles?.some((r) => r.toString() === roleId.toString()),
-      )
-    ) {
+    const hasRole = channel.allowedRoles.some((roleId) =>
+      membership.roles?.some((r) => r.toString() === roleId.toString()),
+    );
+    if (!hasRole) {
       throw ApiError.forbidden("You don't have access to this private channel.");
     }
   }
@@ -209,17 +213,16 @@ export const getChannel = asyncHandler(async (req: AuthReq, res: Response) => {
 
 // ─── Update channel ───────────────────────────────────────────────────────────
 
-export const updateChannel = asyncHandler(async (req: AuthReq, res: Response) => {
+export const updateChannel = asyncHandler(async (req: Request, res: Response) => {
   const { channelId } = req.params;
-  const { name, topic, category, position, isPrivate, allowedRoles } = req.body as {
-    name?: string;
-    topic?: string;
-    category?: string;
-    position?: number;
-    isPrivate?: boolean;
-    allowedRoles?: string[];
-  };
-  const userId = validateObjectId(req.user._id);
+  const { name, topic, category, position, isPrivate, allowedRoles } =
+    req.body as Partial<
+      Pick<IChannel, "name" | "topic" | "category" | "position" | "isPrivate"> & {
+        allowedRoles: string[];
+      }
+    >;
+
+  const userId = validateObjectId(req.user!._id);
   const io = getIO();
 
   const channel = await ChannelModel.findById(channelId);
@@ -234,7 +237,9 @@ export const updateChannel = asyncHandler(async (req: AuthReq, res: Response) =>
       _id: { $ne: channelId },
     });
     if (duplicate) {
-      throw ApiError.conflict("A channel with this name already exists in this server.");
+      throw ApiError.conflict(
+        "A channel with this name already exists in this server.",
+      );
     }
     channel.name = name.toLowerCase();
   }
@@ -243,10 +248,11 @@ export const updateChannel = asyncHandler(async (req: AuthReq, res: Response) =>
   if (category !== undefined) channel.category = category;
   if (position !== undefined) channel.position = position;
   if (isPrivate !== undefined) channel.isPrivate = isPrivate;
-  if (allowedRoles !== undefined) channel.allowedRoles = allowedRoles as unknown as Types.ObjectId[];
+  if (allowedRoles !== undefined) {
+    channel.allowedRoles = allowedRoles as unknown as Types.ObjectId[];
+  }
 
   await channel.save();
-
   await invalidateChannelCache(channel.server, channelId);
 
   io.to(`server:${channel.server}`).emit("channel:updated", {
@@ -260,9 +266,9 @@ export const updateChannel = asyncHandler(async (req: AuthReq, res: Response) =>
 
 // ─── Delete channel ───────────────────────────────────────────────────────────
 
-export const deleteChannel = asyncHandler(async (req: AuthReq, res: Response) => {
+export const deleteChannel = asyncHandler(async (req: Request, res: Response) => {
   const { channelId } = req.params;
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
   const io = getIO();
 
   const channel = await ChannelModel.findById(channelId);
@@ -290,15 +296,14 @@ export const deleteChannel = asyncHandler(async (req: AuthReq, res: Response) =>
 
 // ─── Reorder channels ─────────────────────────────────────────────────────────
 
-export const reorderChannels = asyncHandler(async (req: AuthReq, res: Response) => {
+export const reorderChannels = asyncHandler(async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const { channelOrder } = req.body as {
     channelOrder: Array<{ channelId: string; position: number }>;
   };
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
   const io = getIO();
 
-  // FIX: validation is now done by Zod middleware; keep lightweight runtime guard
   if (!Array.isArray(channelOrder) || channelOrder.length === 0) {
     throw ApiError.badRequest("channelOrder must be a non-empty array.");
   }
@@ -316,7 +321,7 @@ export const reorderChannels = asyncHandler(async (req: AuthReq, res: Response) 
 
   const channels = await ChannelModel.find({ server: serverId })
     .sort({ position: 1 })
-    .lean();
+    .lean<IChannel[]>();
 
   await invalidateChannelCache(serverId);
 

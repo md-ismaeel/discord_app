@@ -1,5 +1,5 @@
-import type { Request, Response, CookieOptions } from "express";
-import type { Types } from "mongoose";
+import type { Request, Response } from "express";
+import type { CookieOptions } from "express";
 import { asyncHandler } from "@/utils/asyncHandler";
 import { sendSuccess, sendCreated } from "@/utils/response";
 import { ApiError } from "@/utils/ApiError";
@@ -9,7 +9,7 @@ import { ERROR_MESSAGES } from "@/constants/errorMessages";
 import { SUCCESS_MESSAGES } from "@/constants/successMessages";
 import { getEnv } from "@/config/env.config";
 import { UserModel } from "@/models/user.model";
-import { setTokenCookie, clearTokenCookie } from "@/utils/setTokenCookie";
+import { setTokenCookie } from "@/utils/setTokenCookie";
 import { blacklistToken, isTokenBlacklisted } from "@/utils/redis";
 import { HTTP_STATUS } from "@/constants/httpStatus";
 import { validateObjectId } from "@/utils/validateObjId";
@@ -21,7 +21,6 @@ import {
 } from "@/middlewares/rateLimit.middleware";
 
 // ─── Register ─────────────────────────────────────────────────────────────────
-
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const { name, email, password, username } = req.body as {
     name: string;
@@ -29,15 +28,16 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     password: string;
     username?: string;
   };
-  // FIX: req.clientIp may not exist on base Request — fall back to req.ip ?? ""
-  const clientIp: string = (req as Request & { clientIp?: string }).clientIp ?? req.ip ?? "";
+  const clientIp: string = req.clientIp ?? req.ip ?? "";
 
+  // Check duplicate email
   const existingUser = await UserModel.findOne({ email });
   if (existingUser) {
     await recordRegisterAttempt(clientIp);
     throw ApiError.conflict(ERROR_MESSAGES.USER_ALREADY_EXISTS);
   }
 
+  // Check duplicate username
   if (username) {
     const usernameTaken = await UserModel.findOne({ username });
     if (usernameTaken) {
@@ -58,13 +58,12 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     isEmailVerified: false,
   });
 
-  // FIX: findById can return null — assert non-null after confirming creation succeeded
+  // IUser from models.ts — findById returns IUser | null
   const userResponse = await UserModel.findById(user._id).select("-password");
   if (!userResponse) throw ApiError.internal("Failed to retrieve created user.");
 
   const token = generateToken(userResponse._id);
   setTokenCookie(res, token);
-
   await clearRegisterAttempts(clientIp);
 
   return sendCreated(
@@ -82,16 +81,18 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     username?: string;
     password: string;
   };
-  const clientIp: string = (req as Request & { clientIp?: string }).clientIp ?? req.ip ?? "";
+  const clientIp: string = req.clientIp ?? req.ip ?? "";
 
   const query = email ? { email } : { username };
-  const user = await UserModel.findOne(query).select("+password");
 
+  // IUser.password is select:false in schema — must explicitly include
+  const user = await UserModel.findOne(query).select("+password");
   if (!user) {
     await recordLoginAttempt(clientIp);
     throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
   }
 
+  // IUser.provider: "email" | "google" | "github" | "facebook"
   if (user.provider !== "email") {
     await recordLoginAttempt(clientIp);
     throw ApiError.badRequest(
@@ -99,14 +100,14 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     );
   }
 
-  // FIX: user.password may be undefined (not selected by default) — guard it
+  // IUser.password is optional (not required for OAuth users)
   if (!user.password) {
     await recordLoginAttempt(clientIp);
     throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
   }
 
-  const isPasswordValid = await comparePassword(password, user.password);
-  if (!isPasswordValid) {
+  const isValid = await comparePassword(password, user.password);
+  if (!isValid) {
     await recordLoginAttempt(clientIp);
     throw ApiError.unauthorized(ERROR_MESSAGES.INVALID_CREDENTIALS);
   }
@@ -132,15 +133,14 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ─── OAuth callback ───────────────────────────────────────────────────────────
-
 export const oauthCallback = asyncHandler(async (req: Request, res: Response) => {
-  // req.user is populated by Passport after OAuth flow
-  const passportUser = req.user as { _id: Types.ObjectId } | undefined;
-  if (!passportUser) {
+  // req.user is IUser | undefined (from express.d.ts augmentation via passport)
+  if (!req.user) {
     throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
   }
 
-  const userId = validateObjectId(passportUser._id);
+  // req.user._id is Types.ObjectId from IUser
+  const userId = validateObjectId(req.user._id);
 
   await UserModel.findByIdAndUpdate(userId, {
     status: "online",
@@ -151,12 +151,10 @@ export const oauthCallback = asyncHandler(async (req: Request, res: Response) =>
   setTokenCookie(res, token);
 
   const clientUrl = getEnv("CLIENT_URL");
-  // Token in query param — acceptable for OAuth redirect, but note it appears in logs.
   res.redirect(`${clientUrl}/auth/success?token=${token}`);
 });
 
 // ─── Logout ───────────────────────────────────────────────────────────────────
-
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
   const token: string | undefined =
@@ -164,20 +162,19 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
     (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined);
 
   if (token) {
-    await blacklistToken(token, 604_800); // 7 days
+    await blacklistToken(token, 604_800); // 7 days TTL
   }
 
-  // FIX: req.user typed as unknown on base Request — cast via intersection
-  const userId = validateObjectId(
-    (req as Request & { user?: { _id: Types.ObjectId } }).user?._id,
-  );
+  // req.user is IUser | undefined per express.d.ts — guard it
+  if (!req.user) throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
+
+  const userId = validateObjectId(req.user._id);
 
   await UserModel.findByIdAndUpdate(userId, {
     status: "offline",
     lastSeen: new Date(),
   });
 
-  // FIX: sameSite must be typed as CookieOptions["sameSite"], not a plain string
   const isProduction = getEnv("NODE_ENV") === "production";
   const cookieOptions: CookieOptions = {
     httpOnly: true,
@@ -190,26 +187,18 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ─── Auth status ──────────────────────────────────────────────────────────────
-
 export const getAuthStatus = asyncHandler(async (req: Request, res: Response) => {
-  const user = (req as Request & { user?: unknown }).user;
-
-  if (user) {
+  if (req.user) {
     return sendSuccess(
       res,
-      { isAuthenticated: true, user },
+      { isAuthenticated: true, user: req.user },
       SUCCESS_MESSAGES.AUTH_STATUS_SUCCESS,
     );
   }
-
   return sendSuccess(res, { isAuthenticated: false, user: null });
 });
 
 // ─── Refresh token ────────────────────────────────────────────────────────────
-// FIX: original did `if (!decoded)` but our updated verifyToken THROWS on
-// failure (never returns null). The null-check is now dead code — removed.
-// The throw from verifyToken propagates through asyncHandler automatically.
-
 export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
   const token: string | undefined =
     req.cookies?.refreshToken ?? req.body?.refreshToken;
@@ -218,7 +207,7 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
     throw ApiError.unauthorized("Refresh token is required.");
   }
 
-  // verifyToken throws ApiError.unauthorized on invalid/expired tokens
+  // verifyToken throws ApiError on invalid/expired — no null check needed
   const decoded = verifyToken(token);
 
   const isBlacklisted = await isTokenBlacklisted(token);
@@ -227,9 +216,7 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
   }
 
   const user = await UserModel.findById(decoded.userId);
-  if (!user) {
-    throw ApiError.unauthorized(ERROR_MESSAGES.USER_NOT_FOUND);
-  }
+  if (!user) throw ApiError.unauthorized(ERROR_MESSAGES.USER_NOT_FOUND);
 
   const newToken = generateToken(user._id);
   setTokenCookie(res, newToken);
