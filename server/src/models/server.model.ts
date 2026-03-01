@@ -1,7 +1,7 @@
 import mongoose, { Schema, type Model } from "mongoose";
 import type { IServer, IBannedUser } from "@/types/models";
 
-// ─── Sub-schema
+//  Sub-schema
 // A proper Schema for IBannedUser so Mongoose validates individual fields
 // rather than treating the array element as a mixed type.
 
@@ -24,7 +24,7 @@ const bannedUserSchema = new Schema<IBannedUser>(
   { _id: false },
 );
 
-// ─── Schema
+//  Schema 
 const serverSchema = new Schema<IServer>(
   {
     name: {
@@ -62,13 +62,12 @@ const serverSchema = new Schema<IServer>(
   { timestamps: true },
 );
 
-// ─── Indexes
+//  Indexes
 serverSchema.index({ owner: 1 });
 serverSchema.index({ name: 1 });
 serverSchema.index({ members: 1 });
 // Public server discovery — browse / search
 serverSchema.index({ isPublic: 1, name: 1 });
 
-// ─── Model 
-export const ServerModel: Model<IServer> = (mongoose.models["Server"] as Model<IServer>) ??
-  mongoose.model<IServer>("Server", serverSchema);
+//  Model 
+export const ServerModel: Model<IServer> = (mongoose.models["Server"] as Model<IServer>) ?? mongoose.model<IServer>("Server", serverSchema);

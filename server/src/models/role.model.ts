@@ -1,7 +1,7 @@
 import mongoose, { Schema, type Model } from "mongoose";
 import type { IRole, IRolePermissions } from "@/types/models";
 
-// ─── Sub-schema ───────────────────────────────────────────────────────────────
+//  Sub-schema 
 // Explicit sub-schema for permissions so Mongoose validates each boolean field
 // rather than accepting anything as a mixed object.
 
@@ -29,8 +29,7 @@ const permissionsSchema = new Schema<IRolePermissions>(
   { _id: false },
 );
 
-// ─── Schema 
-
+//  Schema 
 const roleSchema = new Schema<IRole>(
   {
     name: {
@@ -66,15 +65,9 @@ const roleSchema = new Schema<IRole>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
-// Fetch all roles for a server ordered by priority
+//  Indexes
 roleSchema.index({ server: 1, position: 1 });
-// Fast lookup for the @everyone / default role
 roleSchema.index({ server: 1, isDefault: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const RoleModel: Model<IRole> =
-  (mongoose.models["Role"] as Model<IRole>) ??
-  mongoose.model<IRole>("Role", roleSchema);
+//  Model
+export const RoleModel: Model<IRole> = (mongoose.models["Role"] as Model<IRole>) ?? mongoose.model<IRole>("Role", roleSchema);

@@ -1,9 +1,9 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { asyncHandler } from "../utils/asyncHandler.js";
-import { ApiError } from "../utils/ApiError.js";
-import { verifyToken } from "../utils/jwt.js";
+import { asyncHandler } from "@/utils/asyncHandler";
+import { ApiError } from "@/utils/ApiError";
+import { verifyToken } from "@/utils/jwt";
 import { ERROR_MESSAGES } from "../constants/errorMessages.js";
-import { UserModel } from "../models/user.model.js";
+import { UserModel } from "@/models/user.model";
 import { isTokenBlacklisted } from "../utils/redis.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 
@@ -138,19 +138,13 @@ export const checkOwnership = (userIdParam = "userId"): RequestHandler => {
 // ─── requireEmailVerification ─────────────────────────────────────────────────
 // Blocks access until the user has verified their email address.
 
-export const requireEmailVerification: RequestHandler = (
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void => {
+export const requireEmailVerification: RequestHandler = (req: Request, _res: Response, next: NextFunction): void => {
   if (!req.user) {
     throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
   }
 
   if (!req.user.isEmailVerified) {
-    throw ApiError.forbidden(
-      "Please verify your email before accessing this resource.",
-    );
+    throw ApiError.forbidden("Please verify your email before accessing this resource.");
   }
 
   next();

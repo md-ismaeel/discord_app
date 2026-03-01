@@ -1,8 +1,7 @@
 import { z } from "zod";
-import { objectIdSchema, paginationSchema, userIdParamSchema } from "./common.js";
+import { objectIdSchema, paginationSchema, userIdParamSchema } from "@/validations/common";
 
-// ─── Attachment sub-schema ────────────────────────────────────────────────────
-
+// Attachment sub-schema
 const attachmentSchema = z.object({
     url: z.string().url("Attachment URL must be valid"),
     filename: z.string().min(1, "Filename is required"),
@@ -10,8 +9,7 @@ const attachmentSchema = z.object({
     type: z.string().min(1, "MIME type is required"),
 });
 
-// ─── Send DM ──────────────────────────────────────────────────────────────────
-
+// Send DM
 export const sendDirectMessageSchema = z.object({
     content: z
         .string()
@@ -27,8 +25,7 @@ export const sendDirectMessageSchema = z.object({
 
 export type SendDirectMessageInput = z.infer<typeof sendDirectMessageSchema>;
 
-// ─── Edit DM ──────────────────────────────────────────────────────────────────
-
+// Edit DM
 export const editDirectMessageSchema = z.object({
     content: z
         .string()
@@ -39,8 +36,7 @@ export const editDirectMessageSchema = z.object({
 
 export type EditDirectMessageInput = z.infer<typeof editDirectMessageSchema>;
 
-// ─── Get DM conversation (paginated) ─────────────────────────────────────────
-
+// Get DM conversation (paginated)
 export const getDirectMessagesSchema = paginationSchema.extend({
     before: objectIdSchema.optional(),
     after: objectIdSchema.optional(),
@@ -48,8 +44,7 @@ export const getDirectMessagesSchema = paginationSchema.extend({
 
 export type GetDirectMessagesQuery = z.infer<typeof getDirectMessagesSchema>;
 
-// ─── Mark as read ─────────────────────────────────────────────────────────────
-
+// Mark as read
 export const markAsReadSchema = z.object({
     messageIds: z
         .array(objectIdSchema)
@@ -58,7 +53,6 @@ export const markAsReadSchema = z.object({
 
 export type MarkAsReadInput = z.infer<typeof markAsReadSchema>;
 
-// ─── Param schemas ────────────────────────────────────────────────────────────
-
+// Param schemas
 export { userIdParamSchema };
 export type { UserIdParam } from "./common.js";

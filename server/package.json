@@ -1,13 +1,13 @@
 {
-  "name": "discord-ts",
+  "name": "discord-app",
   "version": "1.0.0",
   "description": "Discord clone built with TypeScript",
-  "main": "dist/server.js",
+  "main": "dist/server.ts",
   "scripts": {
-    "dev": "nodemon src/server.ts",
+    "dev": "nodemon",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "start:prod": "NODE_ENV=production node dist/server.js",
+    "start": "node dist/server.ts",
+    "start:prod": "NODE_ENV=production node dist/server.ts",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean"
@@ -60,7 +60,6 @@
     "@types/passport-github2": "^1.2.9",
     "@types/passport-google-oauth20": "^2.0.17",
     "nodemon": "^3.1.14",
-    "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "tsx": "^4.19.4",
     "typescript": "^5.9.3"

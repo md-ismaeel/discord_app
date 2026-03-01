@@ -6,10 +6,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   CopyObjectCommand,          // FIX: original used PutObjectCommand for copies — wrong command
-  type ObjectCannedACL,
   type HeadObjectCommandOutput,
-  type DeletedObject,
-  type Error as S3Error,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ApiError } from "../utils/ApiError.js";
@@ -17,69 +14,10 @@ import { getEnv } from "../config/env.config.js";
 import crypto from "crypto";
 import path from "path";
 
-// ─── Return-type interfaces ───────────────────────────────────────────────────
+import * as s3Types from "@/types/s3"
 
-export interface S3UploadResult {
-  /** Full public URL (CloudFront or direct S3) */
-  url: string;
-  /** S3 object key — store this for deletion */
-  key: string;
-  /** File size in bytes */
-  size: number;
-}
 
-export interface S3AttachmentResult extends S3UploadResult {
-  /** Original filename (for display in chat) */
-  filename: string;
-  /** File extension without the dot, e.g. "pdf" */
-  type: string;
-}
-
-export interface S3EmojiResult {
-  url: string;
-  key: string;
-}
-
-export interface S3DeleteResult {
-  success: true;
-  key: string;
-}
-
-export interface S3BatchDeleteResult {
-  deleted: DeletedObject[];
-  errors: S3Error[];
-}
-
-export interface S3FileMetadata {
-  contentType?: string;
-  contentLength?: number;
-  lastModified?: Date;
-  metadata?: Record<string, string>;
-  etag?: string;
-}
-
-export interface S3PresignedUploadResult {
-  url: string;
-  key: string;
-  expiresIn: number;
-}
-
-export interface S3CopyResult {
-  sourceKey: string;
-  destinationKey: string;
-  url: string;
-}
-
-// ─── Upload options ───────────────────────────────────────────────────────────
-
-interface UploadOptions {
-  contentType?: string;
-  acl?: ObjectCannedACL;
-  metadata?: Record<string, string>;
-  cacheControl?: string;
-}
-
-// ─── S3 Client ────────────────────────────────────────────────────────────────
+//  S3 Client 
 
 const s3Client = new S3Client({
   region: getEnv("AWS_REGION"),
@@ -94,7 +32,7 @@ const BUCKET_NAME: string = getEnv("AWS_BUCKET_NAME");
 const CDN_URL: string | null =
   (getEnv("AWS_CLOUDFRONT_URL") || "").replace(/\/$/, "") || null;
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
+//  Private helpers 
 
 /**
  * Build a unique filename that is safe for S3 keys.
@@ -138,17 +76,13 @@ const getContentType = (filename: string): string => {
   return MIME_MAP[path.extname(filename).toLowerCase()] ?? "application/octet-stream";
 };
 
-// ─── Core upload ──────────────────────────────────────────────────────────────
+//  Core upload 
 
 /**
  * Upload a Buffer to S3 at the given key.
  * All public upload helpers delegate here.
  */
-const uploadToS3 = async (
-  fileBuffer: Buffer,
-  key: string,
-  options: UploadOptions = {},
-): Promise<S3UploadResult> => {
+const uploadToS3 = async (fileBuffer: Buffer, key: string, options: s3Types.UploadOptions = {}): Promise<s3Types.S3UploadResult> => {
   try {
     await s3Client.send(
       new PutObjectCommand({
@@ -169,14 +103,10 @@ const uploadToS3 = async (
   }
 };
 
-// ─── Upload helpers ───────────────────────────────────────────────────────────
+//  Upload helpers
 
 /** Upload a user avatar. Returns `{ url, key, size }`. */
-export const uploadAvatar = async (
-  fileBuffer: Buffer,
-  userId: string,
-  originalName: string,
-): Promise<S3UploadResult> => {
+export const uploadAvatar = async (fileBuffer: Buffer, userId: string, originalName: string,): Promise<s3Types.S3UploadResult> => {
   const key = `avatars/${userId}/${generateUniqueFilename(originalName, "avatar-")}`;
   return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
@@ -185,11 +115,7 @@ export const uploadAvatar = async (
 };
 
 /** Upload a server icon. Returns `{ url, key, size }`. */
-export const uploadServerIcon = async (
-  fileBuffer: Buffer,
-  serverId: string,
-  originalName: string,
-): Promise<S3UploadResult> => {
+export const uploadServerIcon = async (fileBuffer: Buffer, serverId: string, originalName: string,): Promise<s3Types.S3UploadResult> => {
   const key = `servers/${serverId}/icon/${generateUniqueFilename(originalName, "icon-")}`;
   return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
@@ -198,11 +124,7 @@ export const uploadServerIcon = async (
 };
 
 /** Upload a server banner. Returns `{ url, key, size }`. */
-export const uploadServerBanner = async (
-  fileBuffer: Buffer,
-  serverId: string,
-  originalName: string,
-): Promise<S3UploadResult> => {
+export const uploadServerBanner = async (fileBuffer: Buffer, serverId: string, originalName: string,): Promise<s3Types.S3UploadResult> => {
   const key = `servers/${serverId}/banner/${generateUniqueFilename(originalName, "banner-")}`;
   return uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
@@ -211,11 +133,7 @@ export const uploadServerBanner = async (
 };
 
 /** Upload a message attachment (image or file). Returns full attachment metadata. */
-export const uploadMessageAttachment = async (
-  fileBuffer: Buffer,
-  channelId: string,
-  originalName: string,
-): Promise<S3AttachmentResult> => {
+export const uploadMessageAttachment = async (fileBuffer: Buffer, channelId: string, originalName: string,): Promise<s3Types.S3AttachmentResult> => {
   const key = `messages/${channelId}/${generateUniqueFilename(originalName)}`;
   const result = await uploadToS3(fileBuffer, key, {
     contentType: getContentType(originalName),
@@ -230,12 +148,7 @@ export const uploadMessageAttachment = async (
 };
 
 /** Upload a custom server emoji. Returns `{ url, key }`. */
-export const uploadCustomEmoji = async (
-  fileBuffer: Buffer,
-  serverId: string,
-  emojiName: string,
-  originalName: string,
-): Promise<S3EmojiResult> => {
+export const uploadCustomEmoji = async (fileBuffer: Buffer, serverId: string, emojiName: string, originalName: string,): Promise<s3Types.S3EmojiResult> => {
   const ext = path.extname(originalName);
   const key = `servers/${serverId}/emojis/${emojiName}${ext}`;
   const result = await uploadToS3(fileBuffer, key, {
@@ -245,7 +158,7 @@ export const uploadCustomEmoji = async (
   return { url: result.url, key: result.key };
 };
 
-// ─── Batch upload ─────────────────────────────────────────────────────────────
+//  Batch upload 
 
 /**
  * Upload multiple multer files as message attachments concurrently.
@@ -254,15 +167,15 @@ export const uploadCustomEmoji = async (
 export const uploadMultipleAttachments = (
   files: Express.Multer.File[],
   channelId: string,
-): Promise<S3AttachmentResult[]> =>
+): Promise<s3Types.S3AttachmentResult[]> =>
   Promise.all(
     files.map((f) => uploadMessageAttachment(f.buffer, channelId, f.originalname)),
   );
 
-// ─── Delete helpers ───────────────────────────────────────────────────────────
+//  Delete helpers 
 
 /** Delete one object from S3 by key. */
-export const deleteFromS3 = async (key: string): Promise<S3DeleteResult> => {
+export const deleteFromS3 = async (key: string): Promise<s3Types.S3DeleteResult> => {
   try {
     await s3Client.send(
       new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
@@ -277,7 +190,7 @@ export const deleteFromS3 = async (key: string): Promise<S3DeleteResult> => {
 /** Delete multiple objects in a single S3 request. */
 export const deleteMultipleFiles = async (
   keys: string[],
-): Promise<S3BatchDeleteResult> => {
+): Promise<s3Types.S3BatchDeleteResult> => {
   try {
     const result = await s3Client.send(
       new DeleteObjectsCommand({
@@ -295,7 +208,7 @@ export const deleteMultipleFiles = async (
   }
 };
 
-// ─── URL utilities ────────────────────────────────────────────────────────────
+//  URL utilities 
 
 /**
  * Extract the S3 object key from a public URL (CloudFront or direct S3).
@@ -320,7 +233,7 @@ export const extractKeyFromUrl = (url: string): string | null => {
   }
 };
 
-// ─── Presigned URLs ───────────────────────────────────────────────────────────
+//  Presigned URLs 
 
 /**
  * Generate a short-lived download URL for a private file.
@@ -346,11 +259,7 @@ export const generatePresignedUrl = async (
  * Generate a short-lived upload URL for direct browser-to-S3 uploads.
  * @param expiresIn - TTL in seconds (default 15 minutes)
  */
-export const generatePresignedUploadUrl = async (
-  key: string,
-  contentType: string,
-  expiresIn = 900,
-): Promise<S3PresignedUploadResult> => {
+export const generatePresignedUploadUrl = async (key: string, contentType: string, expiresIn = 900,): Promise<s3Types.S3PresignedUploadResult> => {
   try {
     const url = await getSignedUrl(
       s3Client,
@@ -364,7 +273,7 @@ export const generatePresignedUploadUrl = async (
   }
 };
 
-// ─── Utility helpers ──────────────────────────────────────────────────────────
+//  Utility helpers 
 
 /**
  * Check whether a key exists in S3 without downloading the object.
@@ -384,7 +293,7 @@ export const fileExists = async (key: string): Promise<boolean> => {
 };
 
 /** Return metadata for an S3 object (content type, size, last modified, etc.). */
-export const getFileMetadata = async (key: string): Promise<S3FileMetadata> => {
+export const getFileMetadata = async (key: string): Promise<s3Types.S3FileMetadata> => {
   try {
     const res: HeadObjectCommandOutput = await s3Client.send(
       new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
@@ -407,10 +316,7 @@ export const getFileMetadata = async (key: string): Promise<S3FileMetadata> => {
  * FIX: original used PutObjectCommand with a CopySource header — that is not
  * how the AWS SDK v3 copies work. The correct command is CopyObjectCommand.
  */
-export const copyFile = async (
-  sourceKey: string,
-  destinationKey: string,
-): Promise<S3CopyResult> => {
+export const copyFile = async (sourceKey: string, destinationKey: string,): Promise<s3Types.S3CopyResult> => {
   try {
     await s3Client.send(
       new CopyObjectCommand({
@@ -426,7 +332,7 @@ export const copyFile = async (
   }
 };
 
-// ─── Default export (for convenience) ────────────────────────────────────────
+//  Default export (for convenience) 
 
 export default {
   uploadAvatar,

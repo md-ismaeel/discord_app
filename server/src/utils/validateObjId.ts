@@ -20,7 +20,7 @@ type ObjectIdInput = string | mongoose.Types.ObjectId;
  *   const userId = validateObjectId(req.params.userId, "userId");
  *   const user = await UserModel.findById(userId);
  */
-export const validateObjectId = (id: ObjectIdInput | undefined | null, fieldName = "ID"): ObjectIdInput => {
+export const validateObjectId = (id: ObjectIdInput | undefined | null, fieldName = "ID"): string => {
   if (!id) {
     throw ApiError.badRequest(`${fieldName} is required.`);
   }
@@ -29,5 +29,5 @@ export const validateObjectId = (id: ObjectIdInput | undefined | null, fieldName
     throw ApiError.badRequest(`${fieldName} is not a valid MongoDB ObjectId.`);
   }
 
-  return id;
+  return id.toString();
 };

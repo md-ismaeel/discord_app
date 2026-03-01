@@ -1,5 +1,5 @@
 import mongoose, { Schema, type Model } from "mongoose";
-import type { IInvite } from "../types/models.js";
+import type { IInvite } from "@/types/models";
 
 const inviteSchema = new Schema<IInvite>(
   {
@@ -38,17 +38,10 @@ const inviteSchema = new Schema<IInvite>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
-// Primary lookup path — join via invite code
+//  Indexes
 inviteSchema.index({ code: 1 });
-// All invites for a server
 inviteSchema.index({ server: 1 });
-// TTL-style queries — find / purge expired invites in background jobs
 inviteSchema.index({ expiresAt: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const InviteModel: Model<IInvite> =
-  (mongoose.models["Invite"] as Model<IInvite>) ??
-  mongoose.model<IInvite>("Invite", inviteSchema);
+//  Model
+export const InviteModel: Model<IInvite> = (mongoose.models["Invite"] as Model<IInvite>) ?? mongoose.model<IInvite>("Invite", inviteSchema);

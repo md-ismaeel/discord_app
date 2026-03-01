@@ -1,5 +1,5 @@
 import mongoose, { Schema, type Model } from "mongoose";
-import type { IServerMember } from "../types/models.js";
+import type { IServerMember } from "@/types/models";
 
 const serverMemberSchema = new Schema<IServerMember>(
   {
@@ -39,8 +39,7 @@ const serverMemberSchema = new Schema<IServerMember>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
+//  Indexes 
 // Primary constraint — a user can only be a member of each server once
 serverMemberSchema.index({ user: 1, server: 1 }, { unique: true });
 // List all members of a server filtered by hierarchy role
@@ -48,8 +47,5 @@ serverMemberSchema.index({ server: 1, role: 1 });
 // Member list sorted by join date
 serverMemberSchema.index({ server: 1, joinedAt: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const ServerMemberModel: Model<IServerMember> =
-  (mongoose.models["ServerMember"] as Model<IServerMember>) ??
-  mongoose.model<IServerMember>("ServerMember", serverMemberSchema);
+//  Model 
+export const ServerMemberModel: Model<IServerMember> = (mongoose.models["ServerMember"] as Model<IServerMember>) ?? mongoose.model<IServerMember>("ServerMember", serverMemberSchema);

@@ -1,57 +1,33 @@
 import express from "express";
-import { authenticated } from "../middlewares/auth.middleware.js";
-import {
-  validateBody,
-  validateParams,
-} from "../middlewares/validate.middleware.js";
-import * as inviteController from "../controllers/invite.controller.js";
-import {
-  createInviteSchema,
-  inviteCodeParamSchema,
-  serverIdParamSchema,
-} from "../validations/invite.validation.js";
+import { authenticated } from "@/middlewares/auth.middleware";
+import { validateParams } from "@/middlewares/validate.middleware";
+import * as inviteController from "@/controllers/invite.controller";
+import { inviteCodeParamSchema } from "@/validations/invite.validation";
 
 const inviteRouter = express.Router();
 
-//    Get invite details by code
-inviteRouter.get(
-  "/:code",
+//    Preview an invite by code (shown before the user decides to join)
+inviteRouter.get("/:code",
   validateParams(inviteCodeParamSchema),
   inviteController.getInvite,
 );
 
+// ALL ROUTES BELOW REQUIRE AUTHENTICATION
 inviteRouter.use(authenticated);
 
-//    Join server using invite code
-inviteRouter.post(
-  "/:code/join",
+//    Clean up all expired invites (admin/cron task)
+inviteRouter.post("/cleanup", inviteController.cleanupExpiredInvites);
+
+//    Join a server using an invite code
+inviteRouter.post("/:code/join",
   validateParams(inviteCodeParamSchema),
   inviteController.joinServerWithInvite,
 );
 
-//    Delete/Revoke an invite
-inviteRouter.delete(
-  "/:code",
+//    Revoke / delete an invite
+inviteRouter.delete("/:code",
   validateParams(inviteCodeParamSchema),
   inviteController.deleteInvite,
-);
-
-//    Clean up expired invites
-inviteRouter.post("/cleanup", inviteController.cleanupExpiredInvites);
-
-//    Create server invite
-inviteRouter.post(
-  "/servers/:serverId/invites",
-  validateParams(serverIdParamSchema),
-  validateBody(createInviteSchema),
-  inviteController.createInvite,
-);
-
-//    Get all invites for a server
-inviteRouter.get(
-  "/servers/:serverId/invites",
-  validateParams(serverIdParamSchema),
-  inviteController.getServerInvites,
 );
 
 export { inviteRouter };

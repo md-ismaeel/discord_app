@@ -12,6 +12,7 @@ export const SUCCESS_MESSAGES = {
     USER_DELETED: "User deleted successfully.",
     PROFILE_UPDATED: "Profile updated successfully.",
     GET_PROFILE_SUCCESS: "Profile fetched successfully.",
+    REQUESTED_TO_YOURSELF: "Cannot send a friend request to yourself.",
 
     // ── Friends ───────────────────────────────────────────────────────────────
     FRIEND_REQUEST_SENT: "Friend request sent successfully.",
@@ -19,6 +20,7 @@ export const SUCCESS_MESSAGES = {
     FRIEND_REQUEST_DECLINED: "Friend request declined.",
     FRIEND_REMOVED: "Friend removed successfully.",
     GET_FRIENDS_SUCCESS: "Friends list fetched successfully.",
+    FRIEND_REQUEST_CANCELLED: "Friend request cancelled.",
 
     // ── Server ────────────────────────────────────────────────────────────────
     SERVER_CREATED: "Server created successfully.",
@@ -45,6 +47,14 @@ export const SUCCESS_MESSAGES = {
     // ── Invites ───────────────────────────────────────────────────────────────
     INVITE_CREATED: "Invite created successfully.",
     INVITE_DELETED: "Invite deleted successfully.",
+
+    // ── Direct Messages ───────────────────────────────────────────────────────
+    CONVERSATION_FETCHED: "Conversation fetched successfully.",
+    CONVERSATIONS_FETCHED: "Conversations fetched successfully.",
+    MESSAGE_EDITED: "Message edited successfully.",
+    MESSAGE_READ: "Message read successfully.",
+    UNREAD_COUNT: "Unread count fetched successfully.",
+    CONVERSATION_DELETED: "Conversation deleted successfully.",
 } as const;
 
 export type SuccessMessage = (typeof SUCCESS_MESSAGES)[keyof typeof SUCCESS_MESSAGES];

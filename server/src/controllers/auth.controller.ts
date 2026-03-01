@@ -11,7 +11,6 @@ import { getEnv } from "@/config/env.config";
 import { UserModel } from "@/models/user.model";
 import { setTokenCookie } from "@/utils/setTokenCookie";
 import { blacklistToken, isTokenBlacklisted } from "@/utils/redis";
-import { HTTP_STATUS } from "@/constants/httpStatus";
 import { validateObjectId } from "@/utils/validateObjId";
 import {
   recordLoginAttempt,
@@ -20,7 +19,7 @@ import {
   clearRegisterAttempts,
 } from "@/middlewares/rateLimit.middleware";
 
-// ─── Register ─────────────────────────────────────────────────────────────────
+// ─── Register
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const { name, email, password, username } = req.body as {
     name: string;
@@ -66,15 +65,10 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
   setTokenCookie(res, token);
   await clearRegisterAttempts(clientIp);
 
-  return sendCreated(
-    res,
-    { user: userResponse, token },
-    SUCCESS_MESSAGES.REGISTER_SUCCESS,
-  );
+  sendCreated(res, { user: userResponse, token }, SUCCESS_MESSAGES.REGISTER_SUCCESS);
 });
 
-// ─── Login ────────────────────────────────────────────────────────────────────
-
+//  Login
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const { email, username, password } = req.body as {
     email?: string;
@@ -132,7 +126,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   );
 });
 
-// ─── OAuth callback ───────────────────────────────────────────────────────────
+//  OAuth callback
 export const oauthCallback = asyncHandler(async (req: Request, res: Response) => {
   // req.user is IUser | undefined (from express.d.ts augmentation via passport)
   if (!req.user) {
@@ -154,7 +148,7 @@ export const oauthCallback = asyncHandler(async (req: Request, res: Response) =>
   res.redirect(`${clientUrl}/auth/success?token=${token}`);
 });
 
-// ─── Logout ───────────────────────────────────────────────────────────────────
+//  Logout
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
   const token: string | undefined =
@@ -166,7 +160,9 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // req.user is IUser | undefined per express.d.ts — guard it
-  if (!req.user) throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
+  if (!req.user) {
+    throw ApiError.unauthorized(ERROR_MESSAGES.UNAUTHORIZED);
+  }
 
   const userId = validateObjectId(req.user._id);
 
@@ -186,19 +182,15 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
   return sendSuccess(res, null, SUCCESS_MESSAGES.LOGOUT_SUCCESS);
 });
 
-// ─── Auth status ──────────────────────────────────────────────────────────────
+//  Auth status
 export const getAuthStatus = asyncHandler(async (req: Request, res: Response) => {
   if (req.user) {
-    return sendSuccess(
-      res,
-      { isAuthenticated: true, user: req.user },
-      SUCCESS_MESSAGES.AUTH_STATUS_SUCCESS,
-    );
+    return sendSuccess(res, { isAuthenticated: true, user: req.user }, SUCCESS_MESSAGES.AUTH_STATUS_SUCCESS);
   }
   return sendSuccess(res, { isAuthenticated: false, user: null });
 });
 
-// ─── Refresh token ────────────────────────────────────────────────────────────
+//  Refresh token
 export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
   const token: string | undefined =
     req.cookies?.refreshToken ?? req.body?.refreshToken;

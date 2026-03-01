@@ -1,14 +1,13 @@
 import mongoose, { Schema, type Model, type HydratedDocument } from "mongoose";
 import type { IUser, IUserMethods, IUserPreferences } from "@/types/models";
 
-// ─── Types
-
+//  Types
 // Pass all three generics so Mongoose knows the document shape, query helpers,
 // AND instance methods. Without IUserMethods, calling doc.isOnline() errors.
 type UserModelType = Model<IUser, Record<string, never>, IUserMethods>;
 export type UserDocument = HydratedDocument<IUser, IUserMethods>;
 
-// ─── Constants
+//  Constants
 const DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 
 const DEFAULT_PREFERENCES: IUserPreferences = {
@@ -22,7 +21,7 @@ const DEFAULT_PREFERENCES: IUserPreferences = {
   },
 };
 
-// ─── Schema
+//  Schema
 const userSchema = new Schema<IUser, UserModelType, IUserMethods>(
   {
     name: {
@@ -141,22 +140,22 @@ userSchema.index({ username: 1 });
 userSchema.index({ provider: 1, providerId: 1 });
 userSchema.index({ status: 1 });
 
-// ─── Virtuals
+//  Virtuals
 userSchema.virtual("displayName").get(function (this: IUser): string {
   return this.username ?? this.name;
 });
 
-// ─── Instance methods
+//  Instance methods
 userSchema.methods.isOnline = function (this: IUser): boolean {
   return this.status === "online";
 };
 
-// ─── toJSON transform
+//  toJSON transform
 // Strips internal/sensitive fields automatically on res.json() calls.
-
 userSchema.set("toJSON", {
   virtuals: true,
-  transform(_doc: Record<string, unknown>, ret: Record<string, unknown>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  transform(_doc, ret: any) {
     delete ret["password"];
     delete ret["__v"];
     delete ret["avatarPublicId"];
@@ -165,8 +164,6 @@ userSchema.set("toJSON", {
   },
 });
 
-// ─── Model
+//  Model
 // Guard against model re-registration during hot-reload (ts-node --watch, Jest).
-
-export const UserModel: UserModelType = (mongoose.models["User"] as UserModelType) ??
-  mongoose.model<IUser, UserModelType>("User", userSchema);
+export const UserModel: UserModelType = (mongoose.models["User"] as UserModelType) ?? mongoose.model<IUser, UserModelType>("User", userSchema);

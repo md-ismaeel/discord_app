@@ -1,8 +1,7 @@
 import { z } from "zod";
 import { objectIdSchema } from "./common.js";
 
-// ─── Create channel ───────────────────────────────────────────────────────────
-
+//  Create channel
 export const createChannelSchema = z.object({
     name: z
         .string()
@@ -24,8 +23,7 @@ export const createChannelSchema = z.object({
 
 export type CreateChannelInput = z.infer<typeof createChannelSchema>;
 
-// ─── Update channel ───────────────────────────────────────────────────────────
-
+//  Update channel
 export const updateChannelSchema = z.object({
     name: z
         .string()
@@ -45,8 +43,7 @@ export const updateChannelSchema = z.object({
 
 export type UpdateChannelInput = z.infer<typeof updateChannelSchema>;
 
-// ─── Reorder channels ─────────────────────────────────────────────────────────
-
+//  Reorder channels 
 export const reorderChannelsSchema = z.object({
     channelOrder: z
         .array(
@@ -60,8 +57,7 @@ export const reorderChannelsSchema = z.object({
 
 export type ReorderChannelsInput = z.infer<typeof reorderChannelsSchema>;
 
-// ─── Param schemas ────────────────────────────────────────────────────────────
+//  Param schemas 
 // Re-exported for convenience — routes can import everything from one place.
-
 export { channelIdParamSchema } from "./common.js";
 export type { ChannelIdParam } from "./common.js";

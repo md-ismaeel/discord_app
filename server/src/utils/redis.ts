@@ -1,4 +1,4 @@
-import { pubClient } from "../config/redis.config.js";
+import { pubClient } from "@/config/redis.config";
 
 // ─── Token blacklist ──────────────────────────────────────────────────────────
 // Tokens are blacklisted on logout so they can't be reused before expiry.
@@ -8,10 +8,7 @@ import { pubClient } from "../config/redis.config.js";
  * @param token     - Raw JWT string
  * @param expiresIn - Remaining TTL in seconds (use the token's `exp` delta)
  */
-export const blacklistToken = async (
-    token: string,
-    expiresIn: number,
-): Promise<void> => {
+export const blacklistToken = async (token: string, expiresIn: number): Promise<void> => {
     await pubClient.setex(`blacklist:${token}`, expiresIn, "true");
 };
 
@@ -30,17 +27,12 @@ export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
  * Store a short-lived verification code for the given email address.
  * TTL: 10 minutes (600 seconds)
  */
-export const storeVerificationCode = async (
-    email: string,
-    code: string,
-): Promise<void> => {
+export const storeVerificationCode = async (email: string, code: string): Promise<void> => {
     await pubClient.setex(`verify:${email}`, 600, code);
 };
 
 /** Retrieve the stored verification code for an email, or null if expired/absent. */
-export const getVerificationCode = async (
-    email: string,
-): Promise<string | null> => {
+export const getVerificationCode = async (email: string): Promise<string | null> => {
     return pubClient.get(`verify:${email}`);
 };
 
@@ -49,24 +41,19 @@ export const deleteVerificationCode = async (email: string): Promise<void> => {
     await pubClient.del(`verify:${email}`);
 };
 
-// ─── Refresh tokens ───────────────────────────────────────────────────────────
+// ─── Refresh tokens
 // Stored per-user so the latest refresh token can be validated or revoked.
 
 /**
  * Persist a refresh token for a user.
  * TTL: 30 days (2 592 000 seconds)
  */
-export const storeRefreshToken = async (
-    userId: string,
-    token: string,
-): Promise<void> => {
+export const storeRefreshToken = async (userId: string, token: string,): Promise<void> => {
     await pubClient.setex(`refresh:${userId}`, 2_592_000, token);
 };
 
 /** Retrieve the stored refresh token for a user, or null if absent/expired. */
-export const getRefreshToken = async (
-    userId: string,
-): Promise<string | null> => {
+export const getRefreshToken = async (userId: string): Promise<string | null> => {
     return pubClient.get(`refresh:${userId}`);
 };
 

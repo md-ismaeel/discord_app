@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { objectIdSchema } from "./common.js";
 
-// ─── Permissions sub-schema ───────────────────────────────────────────────────
+// Permissions sub-schema
 // Every field is optional here so partial permission updates are valid.
 // The model provides defaults for any field not explicitly set.
 
@@ -25,8 +25,7 @@ export const permissionsSchema = z.object({
 
 export type PermissionsInput = z.infer<typeof permissionsSchema>;
 
-// ─── Create role ──────────────────────────────────────────────────────────────
-
+//  Create role
 export const createRoleSchema = z.object({
   name: z
     .string()
@@ -42,8 +41,7 @@ export const createRoleSchema = z.object({
 
 export type CreateRoleInput = z.infer<typeof createRoleSchema>;
 
-// ─── Update role ──────────────────────────────────────────────────────────────
-
+//  Update role 
 export const updateRoleSchema = z.object({
   name: z
     .string()
@@ -61,8 +59,7 @@ export const updateRoleSchema = z.object({
 
 export type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
 
-// ─── Reorder roles ────────────────────────────────────────────────────────────
-
+//  Reorder roles
 export const reorderRolesSchema = z.object({
   roleOrder: z
     .array(
@@ -76,8 +73,7 @@ export const reorderRolesSchema = z.object({
 
 export type ReorderRolesInput = z.infer<typeof reorderRolesSchema>;
 
-// ─── Param schemas ────────────────────────────────────────────────────────────
-
+//  Param schemas
 export { serverIdParamSchema, roleIdParamSchema } from "./common.js";
 export type { ServerIdParam, RoleIdParam } from "./common.js";
 

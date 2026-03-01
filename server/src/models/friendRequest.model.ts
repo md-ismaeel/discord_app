@@ -1,5 +1,5 @@
 import mongoose, { Schema, type Model } from "mongoose";
-import type { IFriendRequest } from "../types/models.js";
+import type { IFriendRequest } from "@/types/models";
 
 const friendRequestSchema = new Schema<IFriendRequest>(
   {
@@ -25,15 +25,9 @@ const friendRequestSchema = new Schema<IFriendRequest>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
-// Unique constraint prevents duplicate requests between the same two users
+//  Indexes
 friendRequestSchema.index({ sender: 1, receiver: 1 }, { unique: true });
-// Fetch all pending requests for a user (notification inbox)
 friendRequestSchema.index({ receiver: 1, status: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const FriendRequestModel: Model<IFriendRequest> =
-  (mongoose.models["FriendRequest"] as Model<IFriendRequest>) ??
-  mongoose.model<IFriendRequest>("FriendRequest", friendRequestSchema);
+//  Model
+export const FriendRequestModel: Model<IFriendRequest> = (mongoose.models["FriendRequest"] as Model<IFriendRequest>) ?? mongoose.model<IFriendRequest>("FriendRequest", friendRequestSchema);

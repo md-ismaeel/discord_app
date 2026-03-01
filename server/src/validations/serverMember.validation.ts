@@ -1,11 +1,7 @@
 import { z } from "zod";
 import { objectIdSchema } from "./common.js";
 
-// ─── Update member hierarchy role ─────────────────────────────────────────────
-// FIX: original allowed "admin" | "moderator" | "member" but NOT "owner".
-// "owner" is intentionally excluded here — ownership is transferred via a
-// dedicated transfer-ownership endpoint, not a generic role update.
-
+// Update member hierarchy role
 export const updateMemberRoleSchema = z.object({
     role: z.enum(["admin", "moderator", "member"], {
         message: "Role must be one of: admin, moderator, member",
@@ -14,16 +10,14 @@ export const updateMemberRoleSchema = z.object({
 
 export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>;
 
-// ─── Assign / remove a permission role ───────────────────────────────────────
-
+// Assign / remove a permission role
 export const assignRoleSchema = z.object({
     roleId: objectIdSchema.describe("MongoDB ObjectId of the Role to assign"),
 });
 
 export type AssignRoleInput = z.infer<typeof assignRoleSchema>;
 
-// ─── Update nickname ──────────────────────────────────────────────────────────
-
+// Update nickname
 export const updateNicknameSchema = z.object({
     nickname: z
         .string()
@@ -34,8 +28,7 @@ export const updateNicknameSchema = z.object({
 
 export type UpdateNicknameInput = z.infer<typeof updateNicknameSchema>;
 
-// ─── Kick member ──────────────────────────────────────────────────────────────
-
+// Kick member
 export const kickMemberSchema = z.object({
     reason: z
         .string()
@@ -46,8 +39,7 @@ export const kickMemberSchema = z.object({
 
 export type KickMemberInput = z.infer<typeof kickMemberSchema>;
 
-// ─── Ban member ───────────────────────────────────────────────────────────────
-
+// Ban member
 export const banMemberSchema = z.object({
     reason: z
         .string()
@@ -65,7 +57,6 @@ export const banMemberSchema = z.object({
 
 export type BanMemberInput = z.infer<typeof banMemberSchema>;
 
-// ─── Param schemas ────────────────────────────────────────────────────────────
-
+// Param schemas
 export { memberIdParamSchema } from "./common.js";
 export type { MemberIdParam } from "./common.js";

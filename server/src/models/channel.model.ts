@@ -48,15 +48,13 @@ const channelSchema = new Schema<IChannel>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
+//  Indexes
 
 // Fetch all channels for a server sorted by position
 channelSchema.index({ server: 1, position: 1 });
 // Filter by type within a server (e.g. voice channels only)
 channelSchema.index({ server: 1, type: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
+//  Model
 
-export const ChannelModel: Model<IChannel> =
-  (mongoose.models["Channel"] as Model<IChannel>) ??
-  mongoose.model<IChannel>("Channel", channelSchema);
+export const ChannelModel: Model<IChannel> = (mongoose.models["Channel"] as Model<IChannel>) ?? mongoose.model<IChannel>("Channel", channelSchema);

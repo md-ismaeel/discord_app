@@ -1,118 +1,58 @@
 import express from "express";
-import { authenticated } from "../middlewares/auth.middleware.js";
-import {
-  validateBody,
-  validateParams,
-} from "../middlewares/validate.middleware.js";
-import * as directMessageController from "../controllers/directMessage.controller.js";
-import { z } from "zod";
+import { authenticated } from "@/middlewares/auth.middleware";
+import { validateBody, validateParams } from "@/middlewares/validate.middleware";
+import * as directMessageController from "@/controllers/directMessage.controller";
+import { sendDirectMessageSchema, editDirectMessageSchema } from "@validations/directMessahe.validation";
+import { messageIdParamSchema, userIdParamSchema } from "@validations/common";
 
 const directMessageRouter = express.Router();
 
-// ============================================================================
-// ALL ROUTES REQUIRE AUTHENTICATION
-// ============================================================================
 directMessageRouter.use(authenticated);
-
-// ============================================================================
-// VALIDATION SCHEMAS
-// ============================================================================
-
-const sendMessageSchema = z.object({
-  content: z
-    .string()
-    .min(1, "Message content is required")
-    .max(2000, "Message cannot exceed 2000 characters"),
-  attachments: z
-    .array(
-      z.object({
-        url: z.string().url(),
-        filename: z.string(),
-        size: z.number(),
-        type: z.string(),
-      }),
-    )
-    .optional(),
-});
-
-const editMessageSchema = z.object({
-  content: z
-    .string()
-    .min(1, "Message content is required")
-    .max(2000, "Message cannot exceed 2000 characters"),
-});
-
-const userIdParamSchema = z.object({
-  userId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid user ID"),
-});
-
-const recipientIdParamSchema = z.object({
-  recipientId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid recipient ID"),
-});
-
-const messageIdParamSchema = z.object({
-  messageId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid message ID"),
-});
-
-// ============================================================================
-// DIRECT MESSAGE ROUTES
-// ============================================================================
 
 //    Get all conversations for current user
 directMessageRouter.get("/", directMessageController.getConversations);
 
 //    Get unread message count
-directMessageRouter.get(
-  "/unread/count",
-  directMessageController.getUnreadCount,
+//    NOTE: registered before /:userId to prevent "unread" matching as a userId
+directMessageRouter.get("/unread/count", directMessageController.getUnreadCount);
+
+//   Edit a direct message
+directMessageRouter.patch("/message/:messageId",
+  validateParams(messageIdParamSchema),
+  validateBody(editDirectMessageSchema),
+  directMessageController.editDirectMessage,
 );
 
-//    Send a direct message
-directMessageRouter.post(
-  "/:recipientId",
-  validateParams(recipientIdParamSchema),
-  validateBody(sendMessageSchema),
+//    Delete a direct message
+directMessageRouter.delete("/message/:messageId",
+  validateParams(messageIdParamSchema),
+  directMessageController.deleteDirectMessage,
+);
+
+//    Send a direct message to a recipient
+directMessageRouter.post("/:recipientId",
+  validateParams(userIdParamSchema),
+  validateBody(sendDirectMessageSchema),
   directMessageController.sendDirectMessage,
 );
 
-//    Get conversation between two users (paginated)
-directMessageRouter.get(
-  "/:userId",
+//    Mark messages from a user as read
+//    NOTE: /:userId/read before /:userId (GET) to avoid ambiguity on PATCH
+directMessageRouter.patch("/:userId/read",
+  validateParams(userIdParamSchema),
+  directMessageController.markAsRead,
+);
+
+//    Get conversation between current user and another user (paginated)
+directMessageRouter.get("/:userId",
   validateParams(userIdParamSchema),
   directMessageController.getConversation,
 );
 
 //    Delete entire conversation with a user
-directMessageRouter.delete(
-  "/:userId",
+directMessageRouter.delete("/:userId",
   validateParams(userIdParamSchema),
   directMessageController.deleteConversation,
-);
-
-//    Mark messages as read
-directMessageRouter.patch(
-  "/:userId/read",
-  validateParams(userIdParamSchema),
-  directMessageController.markAsRead,
-);
-
-// ============================================================================
-// SINGLE MESSAGE OPERATIONS
-// ============================================================================
-
-//    Edit a direct message
-directMessageRouter.patch(
-  "/message/:messageId",
-  validateParams(messageIdParamSchema),
-  validateBody(editMessageSchema),
-  directMessageController.editDirectMessage,
-);
-
-//    Delete a direct message
-directMessageRouter.delete(
-  "/message/:messageId",
-  validateParams(messageIdParamSchema),
-  directMessageController.deleteDirectMessage,
 );
 
 export { directMessageRouter };

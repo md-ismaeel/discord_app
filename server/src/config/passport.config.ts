@@ -6,13 +6,13 @@ import { UserModel } from "@/models/user.model";
 import { getEnv } from "@/config/env.config";
 import type { IUser } from "@/types/models";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+//  Types
 type OAuthProfile = GoogleProfile | GitHubProfile | FacebookProfile;
 type OAuthProvider = "google" | "github" | "facebook";
 // passport's done callback signature
 type DoneFn = (error: Error | null, user?: Express.User | false) => void;
 
-// ─── Serialize / Deserialize ─────────────────────────────────────────────────
+//  Serialize / Deserialize
 passport.serializeUser((user: Express.User, done) => {
   // Cast needed because Express.User is a bare interface
   done(null, (user as IUser)._id.toString());
@@ -28,7 +28,7 @@ passport.deserializeUser(async (id: string, done) => {
   }
 });
 
-// ─── Shared OAuth handler ────────────────────────────────────────────────────
+//  Shared OAuth handler
 const handleOAuthCallback = async (profile: OAuthProfile, provider: OAuthProvider, done: DoneFn): Promise<void> => {
   try {
     const email = profile.emails?.[0]?.value;
@@ -48,8 +48,7 @@ const handleOAuthCallback = async (profile: OAuthProfile, provider: OAuthProvide
       user = await UserModel.create({
         // GitHub profiles use `username`; others use `displayName`
         name:
-          profile.displayName ||
-          ("username" in profile ? profile.username : "") ||
+          profile.displayName || ("username" in profile ? profile.username : "") ||
           email.split("@")[0],
         email,
         provider,
@@ -64,7 +63,7 @@ const handleOAuthCallback = async (profile: OAuthProfile, provider: OAuthProvide
   }
 };
 
-// ─── Google ───────────────────────────────────────────────────────────────────
+//  Google
 const googleClientId = getEnv("GOOGLE_CLIENT_ID");
 const googleClientSecret = getEnv("GOOGLE_CLIENT_SECRET");
 
@@ -86,7 +85,7 @@ if (googleClientId && googleClientSecret) {
   console.warn("Google OAuth skipped — missing credentials");
 }
 
-// ─── GitHub ───────────────────────────────────────────────────────────────────
+//  GitHub 
 const githubClientId = getEnv("GITHUB_CLIENT_ID");
 const githubClientSecret = getEnv("GITHUB_CLIENT_SECRET");
 
@@ -108,7 +107,7 @@ if (githubClientId && githubClientSecret) {
   console.warn("GitHub OAuth skipped — missing credentials");
 }
 
-// ─── Facebook ─────────────────────────────────────────────────────────────────
+//  Facebook 
 const facebookAppId = getEnv("FACEBOOK_APP_ID");
 const facebookAppSecret = getEnv("FACEBOOK_APP_SECRET");
 

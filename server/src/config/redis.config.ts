@@ -2,7 +2,6 @@ import Redis, { type RedisOptions } from "ioredis";
 import { getEnv } from "./env.config.js";
 
 // ─── Config 
-
 const redisOptions: RedisOptions = {
   // Must be null for Socket.IO adapter — it uses blocking commands
   maxRetriesPerRequest: null,
@@ -20,20 +19,18 @@ const redisOptions: RedisOptions = {
   },
 };
 
-// ─── Clients ─────────────────────────────────────────────────────────────────
+//  Clients
 // pubClient  — used for publishing / general commands
-// subClient  — dedicated subscribe client (ioredis requirement for pub/sub)
+// subClient  — dedicated subscribe client (ioredis requirement for pub/sub
 
 export const pubClient = new Redis(getEnv("REDIS_URL"), redisOptions);
 export const subClient = pubClient.duplicate();
 
-// ─── Connection state ────────────────────────────────────────────────────────
-
+//  Connection state 
 let isPubReady = false;
 let isSubReady = false;
 
-// ─── Pub client events ───────────────────────────────────────────────────────
-
+//  Pub client events 
 pubClient.on("connect", () => console.log("Redis pub: connecting..."));
 pubClient.on("ready", () => {
   isPubReady = true;
@@ -48,8 +45,7 @@ pubClient.on("close", () => {
 });
 pubClient.on("reconnecting", () => console.log("Redis pub: reconnecting..."));
 
-// ─── Sub client events ───────────────────────────────────────────────────────
-
+//  Sub client events
 subClient.on("connect", () => console.log("Redis sub: connecting..."));
 subClient.on("ready", () => {
   isSubReady = true;
@@ -64,8 +60,7 @@ subClient.on("close", () => {
 });
 subClient.on("reconnecting", () => console.log("Redis sub: reconnecting..."));
 
-// ─── Health helpers ───────────────────────────────────────────────────────────
-
+//  Health helpers
 export const isRedisReady = (): boolean => isPubReady && isSubReady;
 
 /**
@@ -93,8 +88,7 @@ export const waitForRedis = (timeout = 10_000): Promise<void> =>
     }, timeout);
   });
 
-// ─── Graceful shutdown ───────────────────────────────────────────────────────
-
+//  Graceful shutdown
 export const closeRedis = async (): Promise<void> => {
   console.log("Closing Redis connections...");
   try {

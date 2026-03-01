@@ -1,7 +1,6 @@
 import { z } from "zod";
 
-// ─── Create invite ────────────────────────────────────────────────────────────
-
+//  Create invite
 export const createInviteSchema = z.object({
   maxUses: z
     .number()
@@ -21,11 +20,10 @@ export const createInviteSchema = z.object({
 
 export type CreateInviteInput = z.infer<typeof createInviteSchema>;
 
-// ─── Join server via invite ───────────────────────────────────────────────────
+//  Join server via invite
 // FIX: uppercase transform added — invite codes are stored as uppercase in the
 // model (uppercase: true on the schema) so comparison will fail if the client
 // sends lowercase. Normalise here before it hits the controller.
-
 export const joinServerSchema = z.object({
   inviteCode: z
     .string()
@@ -34,10 +32,8 @@ export const joinServerSchema = z.object({
     .transform((s) => s.toUpperCase()),
 });
 
-export type JoinServerInput = z.infer<typeof joinServerSchema>;
 
-// ─── Param schemas ────────────────────────────────────────────────────────────
-
+//  Param schemas
 export const inviteCodeParamSchema = z.object({
   code: z
     .string()
@@ -46,7 +42,4 @@ export const inviteCodeParamSchema = z.object({
 });
 
 export type InviteCodeParam = z.infer<typeof inviteCodeParamSchema>;
-
-// Re-exported from common — routes can import everything from one place
-export { serverIdParamSchema } from "./common.js";
-export type { ServerIdParam } from "./common.js";
+export type JoinServerInput = z.infer<typeof joinServerSchema>;

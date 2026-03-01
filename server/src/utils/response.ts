@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { HTTP_STATUS, type HttpStatus } from "../constants/httpStatus.js";
+import { HTTP_STATUS, type HttpStatus } from "@/constants/httpStatus";
 
 // ─── Response shape
 // All API responses share this envelope so clients always know what to expect.
@@ -82,7 +82,9 @@ export const sendTooManyRequests = (
     message = "Too many requests. Please slow down.",
     errors?: unknown,
 ): Response<ErrorResponse> =>
-    res.status(HTTP_STATUS.TOO_MANY_REQUESTS).json({ success: false, message, errors });
+    res
+        .status(HTTP_STATUS.TOO_MANY_REQUESTS)
+        .json({ success: false, message, errors });
 
 /**
  * Generic error sender — used by the global error handler.

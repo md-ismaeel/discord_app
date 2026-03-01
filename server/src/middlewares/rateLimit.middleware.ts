@@ -18,13 +18,9 @@ interface RateLimitError {
  * Make sure Express's `trust proxy` setting is enabled when behind a load balancer.
  */
 const getClientIp = (req: Request): string =>
-  (req.headers["x-forwarded-for"] as string | undefined)
-    ?.split(",")[0]
-    ?.trim() ??
+  (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
   (req.headers["x-real-ip"] as string | undefined) ??
-  req.ip ??
-  req.socket.remoteAddress ?? // req.connection is deprecated since Node 13
-  "unknown";
+  req.ip ?? req.socket.remoteAddress ?? "unknown";  // req.connection is deprecated since Node 13
 
 // ─── Factory
 
@@ -133,13 +129,7 @@ export const clearLoginAttempts = (ip: string): Promise<void> =>
 
 // ─── Register 
 // 3 attempts / 15 minutes
-
-export const registerRateLimit = createRateLimiter(
-  "register_attempts",
-  3,
-  900,
-  "Too many registration attempts. Please try again in a few minutes.",
-);
+export const registerRateLimit = createRateLimiter("register_attempts", 3, 900, "Too many registration attempts. Please try again in a few minutes.");
 
 export const recordRegisterAttempt = (ip: string): Promise<void> =>
   recordAttempt("register_attempts", ip, 900);
@@ -150,12 +140,7 @@ export const clearRegisterAttempts = (ip: string): Promise<void> =>
 // ─── Password reset 
 // 3 attempts / 1 hour
 
-export const passwordResetRateLimit = createRateLimiter(
-  "password_reset_attempts",
-  3,
-  3600,
-  "Too many password reset requests. Please try again later.",
-);
+export const passwordResetRateLimit = createRateLimiter("password_reset_attempts", 3, 3600, "Too many password reset requests. Please try again later.");
 
 export const recordPasswordResetAttempt = (ip: string): Promise<void> =>
   recordAttempt("password_reset_attempts", ip, 3600);
@@ -166,12 +151,7 @@ export const clearPasswordResetAttempts = (ip: string): Promise<void> =>
 // ─── Email verification 
 // 5 attempts / 30 minutes
 
-export const emailVerificationRateLimit = createRateLimiter(
-  "email_verification_attempts",
-  5,
-  1800,
-  "Too many verification requests. Please try again later.",
-);
+export const emailVerificationRateLimit = createRateLimiter("email_verification_attempts", 5, 1800, "Too many verification requests. Please try again later.");
 
 export const recordEmailVerificationAttempt = (ip: string): Promise<void> =>
   recordAttempt("email_verification_attempts", ip, 1800);
@@ -182,12 +162,7 @@ export const clearEmailVerificationAttempts = (ip: string): Promise<void> =>
 // ─── General API 
 // 100 requests / 15 minutes
 
-export const generalApiRateLimit = createRateLimiter(
-  "api_requests",
-  100,
-  900,
-  "Too many requests. Please slow down.",
-);
+export const generalApiRateLimit = createRateLimiter("api_requests", 100, 900, "Too many requests. Please slow down.");
 
 export default {
   loginRateLimit,

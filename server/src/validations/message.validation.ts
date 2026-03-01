@@ -1,8 +1,7 @@
 import { z } from "zod";
 import { objectIdSchema, paginationSchema } from "./common.js";
 
-// ─── Attachment sub-schema ────────────────────────────────────────────────────
-
+//  Attachment sub-schema
 const attachmentSchema = z.object({
     url: z.string().url("Attachment URL must be valid"),
     filename: z.string().min(1, "Filename is required"),
@@ -10,11 +9,8 @@ const attachmentSchema = z.object({
     type: z.string().min(1, "MIME type is required"),
 });
 
-// ─── Send message ─────────────────────────────────────────────────────────────
+//  Send message 
 // FIX: user_validation.ts had sendMessageSchema with max 2000 and a `roomId`
-// field. The actual message model uses `channel` not `roomId`, and the model
-// allows 4000 characters. Corrected both.
-
 export const sendMessageSchema = z.object({
     content: z
         .string()
@@ -28,10 +24,7 @@ export const sendMessageSchema = z.object({
     attachments: z.array(attachmentSchema).max(10, "Cannot attach more than 10 files").optional(),
 });
 
-export type SendMessageInput = z.infer<typeof sendMessageSchema>;
-
-// ─── Edit message ─────────────────────────────────────────────────────────────
-
+//  Edit message 
 export const editMessageSchema = z.object({
     content: z
         .string()
@@ -40,19 +33,13 @@ export const editMessageSchema = z.object({
         .trim(),
 });
 
-export type EditMessageInput = z.infer<typeof editMessageSchema>;
-
-// ─── Get messages (paginated) ─────────────────────────────────────────────────
-
+//  Get messages (paginated) 
 export const getMessagesSchema = paginationSchema.extend({
     before: objectIdSchema.optional(), // cursor-based: messages before this ID
     after: objectIdSchema.optional(),  // cursor-based: messages after this ID
 });
 
-export type GetMessagesQuery = z.infer<typeof getMessagesSchema>;
-
-// ─── Add / remove reaction ────────────────────────────────────────────────────
-
+// Add / remove reaction 
 export const reactionSchema = z.object({
     emoji: z
         .string()
@@ -60,9 +47,7 @@ export const reactionSchema = z.object({
         .max(32, "Emoji string is too long"),
 });
 
+export type SendMessageInput = z.infer<typeof sendMessageSchema>;
+export type EditMessageInput = z.infer<typeof editMessageSchema>;
+export type GetMessagesQuery = z.infer<typeof getMessagesSchema>;
 export type ReactionInput = z.infer<typeof reactionSchema>;
-
-// ─── Param schemas ────────────────────────────────────────────────────────────
-
-export { messageIdParamSchema } from "./common.js";
-export type { MessageIdParam } from "./common.js";

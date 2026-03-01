@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-// ─── Re-usable ObjectId primitive ────────────────────────────────────────────
+// Re-usable ObjectId primitive
 // Single source of truth — import this instead of copy-pasting the regex.
 
 export const objectIdSchema = z
   .string()
   .regex(/^[0-9a-fA-F]{24}$/, "Invalid MongoDB ObjectId format");
 
-// ─── Re-usable param schemas ──────────────────────────────────────────────────
+// Re-usable param schemas
 // Centralised so every route that needs e.g. :serverId uses the same validation.
 
 export const userIdParamSchema = z.object({
@@ -34,7 +34,12 @@ export const memberIdParamSchema = z.object({
   memberId: objectIdSchema.describe("MongoDB ObjectId of the server member"),
 });
 
-// ─── Pagination ───────────────────────────────────────────────────────────────
+export const emojiParamSchema = z.object({
+  messageId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid message ID"),
+  emoji: z.string().min(1, "Emoji is required"),
+});
+
+// Pagination
 // Query params arrive as strings — coerce to numbers before validating.
 // FIX: default() must receive the same type as the output after transform.
 //      Original used .default("1") on a string→number transform, which breaks
@@ -57,9 +62,27 @@ export const paginationSchema = z.object({
     .default(20),
 });
 
-// ─── Inferred TypeScript types ────────────────────────────────────────────────
-// Controllers can import these instead of manually typing their request shapes.
+// Search for users by username or email
+export const searchUsersSchema = z.object({
+  q: z.string().min(1, "Search query required"),
+  page: z
+    .string()
+    .regex(/^\d+$/, "Page must be a positive integer")
+    .transform(Number)
+    .pipe(z.number().int().min(1, "Page must be at least 1"))
+    .optional()
+    .default(1),
+  limit: z
+    .string()
+    .regex(/^\d+$/, "Limit must be a positive integer")
+    .transform(Number)
+    .pipe(z.number().int().min(1).max(100, "Limit must be between 1 and 100"))
+    .optional()
+    .default(20),
+});
 
+// Inferred TypeScript types
+// Controllers can import these instead of manually typing their request shapes.
 export type PaginationQuery = z.infer<typeof paginationSchema>;
 export type UserIdParam = z.infer<typeof userIdParamSchema>;
 export type ServerIdParam = z.infer<typeof serverIdParamSchema>;

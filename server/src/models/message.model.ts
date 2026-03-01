@@ -1,10 +1,7 @@
 import mongoose, { Schema, type Model } from "mongoose";
-import type { IMessage, IAttachment, IReaction } from "../types/models.js";
+import type { IMessage, IAttachment, IReaction } from "@/types/models";
 
-// ─── Sub-schemas ──────────────────────────────────────────────────────────────
-// Using typed sub-schemas instead of raw object literals means Mongoose
-// validates each sub-field, and TypeScript enforces the shapes.
-
+//  Sub-schemas 
 const attachmentSchema = new Schema<IAttachment>(
   {
     url: { type: String, required: [true, "Attachment URL is required"] },
@@ -28,8 +25,7 @@ const reactionSchema = new Schema<IReaction>(
   { _id: false },
 );
 
-// ─── Schema ───────────────────────────────────────────────────────────────────
-
+//  Schema
 const messageSchema = new Schema<IMessage>(
   {
     content: {
@@ -68,19 +64,11 @@ const messageSchema = new Schema<IMessage>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
-// Primary pattern: paginate messages newest-first in a channel
+//  Indexes
 messageSchema.index({ channel: 1, createdAt: -1 });
-// Server-wide queries: audit logs, search
 messageSchema.index({ server: 1, createdAt: -1 });
-// All messages by a user
 messageSchema.index({ author: 1 });
-// Pinned messages list for a channel
 messageSchema.index({ channel: 1, isPinned: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const MessageModel: Model<IMessage> =
-  (mongoose.models["Message"] as Model<IMessage>) ??
-  mongoose.model<IMessage>("Message", messageSchema);
+//  Model
+export const MessageModel: Model<IMessage> = (mongoose.models["Message"] as Model<IMessage>) ?? mongoose.model<IMessage>("Message", messageSchema);

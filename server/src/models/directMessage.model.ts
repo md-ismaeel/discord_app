@@ -1,8 +1,7 @@
 import mongoose, { Schema, type Model } from "mongoose";
 import type { IDirectMessage, IAttachment } from "@/types/models";
 
-// ─── Sub-schema ───────────────────────────────────────────────────────────────
-
+//  Sub-schema
 const attachmentSchema = new Schema<IAttachment>(
   {
     url: { type: String, required: [true, "Attachment URL is required"] },
@@ -20,8 +19,7 @@ const attachmentSchema = new Schema<IAttachment>(
   { _id: false },
 );
 
-// ─── Schema ───────────────────────────────────────────────────────────────────
-
+//  Schema
 const directMessageSchema = new Schema<IDirectMessage>(
   {
     content: {
@@ -48,15 +46,11 @@ const directMessageSchema = new Schema<IDirectMessage>(
   { timestamps: true },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────────
-
+//  Indexes
 // Fetch DM conversation between two users, newest-first
 directMessageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
 // Unread message count for a user's inbox
 directMessageSchema.index({ receiver: 1, isRead: 1 });
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export const DirectMessageModel: Model<IDirectMessage> =
-  (mongoose.models["DirectMessage"] as Model<IDirectMessage>) ??
-  mongoose.model<IDirectMessage>("DirectMessage", directMessageSchema);
+//  Model
+export const DirectMessageModel: Model<IDirectMessage> = (mongoose.models["DirectMessage"] as Model<IDirectMessage>) ?? mongoose.model<IDirectMessage>("DirectMessage", directMessageSchema);

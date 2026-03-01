@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 // Load .env from project root regardless of where the process was started from
 config({ path: path.resolve(__dirname, "../../.env") });
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+// ─── Types
 export interface Env {
   // Required
   MONGODB_URI: string;
@@ -35,7 +35,7 @@ export interface Env {
   CLOUDINARY_API_SECRET: string;
 }
 
-// ─── Required keys — server will not start without these ────────────────────
+//  Required keys — server will not start without these 
 const REQUIRED_ENV_KEYS: ReadonlyArray<keyof Env> = [
   "MONGODB_URI",
   "SESSION_SECRET",
@@ -43,7 +43,7 @@ const REQUIRED_ENV_KEYS: ReadonlyArray<keyof Env> = [
   "JWT_SECRET",
 ];
 
-// ─── Defaults for optional keys ─────────────────────────────────────────────
+//  Defaults for optional keys
 // IMPORTANT: required keys must NOT appear here with empty strings — that would
 // let an empty process.env value silently pass the validator.
 
@@ -66,7 +66,7 @@ const DEFAULTS: OptionalEnv = {
   CLOUDINARY_API_SECRET: "",
 };
 
-// ─── Validation ─────────────────────────────────────────────────────────────
+//  Validation
 export const validateEnv = (): void => {
   const missing = REQUIRED_ENV_KEYS.filter(
     (key) => !process.env[key]?.trim(),
@@ -80,10 +80,9 @@ export const validateEnv = (): void => {
   console.log("Environment variables validated");
 };
 
-// ─── Typed getter ────────────────────────────────────────────────────────────
+//  Typed getter
 // Returns process.env value → DEFAULTS fallback → provided fallback
 // The overloads give callers a typed return when they pass a key from Env.
-
 export function getEnv<K extends keyof Env>(key: K): Env[K];
 export function getEnv<K extends keyof Env>(key: K, fallback: Env[K]): Env[K];
 export function getEnv(key: string, fallback?: string): string;
@@ -93,7 +92,7 @@ export function getEnv(key: string, fallback?: string): string {
   return value;
 }
 
-// ─── Convenience helpers ─────────────────────────────────────────────────────
+//  Convenience helpers
 export const isProduction = (): boolean => getEnv("NODE_ENV") === "production";
 export const isDevelopment = (): boolean => getEnv("NODE_ENV") === "development";
 export const isTest = (): boolean => getEnv("NODE_ENV") === "test";

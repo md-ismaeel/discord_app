@@ -1,48 +1,39 @@
 import express from "express";
 import passport from "passport";
-import { validateBody } from "../middlewares/validate.middleware.js";
-import { registerSchema, loginSchema } from "../validations/auth.validation.js";
-import {
-  register,
-  login,
-  oauthCallback,
-  logout,
-  getAuthStatus,
-  refreshToken,
-} from "../controllers/auth.controller.js";
-import { authenticated, optionalAuth } from "../middlewares/auth.middleware.js";
-import {
-  registerRateLimit,
-  loginRateLimit,
-} from "../middlewares/rateLimit.middleware.js";
+import { validateBody } from "@/middlewares/validate.middleware";
+import { registerSchema, loginSchema } from "@/validations/auth.validation";
+import { register, login, oauthCallback, logout, getAuthStatus, refreshToken } from "@/controllers/auth.controller";
+import { authenticated, optionalAuth } from "@/middlewares/auth.middleware";
+import { registerRateLimit, loginRateLimit } from "@/middlewares/rateLimit.middleware";
 
 const authRouter = express.Router();
 
-//    Register new user with email/password
-authRouter.post(
-  "/register",
+//  Register new user with email/password
+authRouter.post("/register",
   registerRateLimit,
   validateBody(registerSchema),
   register,
 );
 
-//    Login user with email/password
-authRouter.post("/login", loginRateLimit, validateBody(loginSchema), login);
+//  Login user with email/password
+authRouter.post("/login",
+  loginRateLimit,
+  validateBody(loginSchema),
+  login
+);
 
-//    Refresh access token using refresh token
+//  Refresh access token using refresh token
 authRouter.post("/refresh", refreshToken);
 
 // GOOGLE OAUTH
-authRouter.get(
-  "/google",
+authRouter.get("/google",
   passport.authenticate("google", {
     scope: ["profile", "email"],
     session: false,
   }),
 );
 
-authRouter.get(
-  "/google/callback",
+authRouter.get("/google/callback",
   passport.authenticate("google", {
     session: false,
     failureRedirect: "/login?error=oauth_failed",
@@ -51,16 +42,13 @@ authRouter.get(
 );
 
 // GITHUB OAUTH
-authRouter.get(
-  "/github",
-  passport.authenticate("github", {
-    scope: ["user:email"],
-    session: false,
-  }),
+authRouter.get("/github", passport.authenticate("github", {
+  scope: ["user:email"],
+  session: false,
+}),
 );
 
-authRouter.get(
-  "/github/callback",
+authRouter.get("/github/callback",
   passport.authenticate("github", {
     session: false,
     failureRedirect: "/login?error=oauth_failed",
@@ -69,16 +57,13 @@ authRouter.get(
 );
 
 // FACEBOOK OAUTH
-authRouter.get(
-  "/facebook",
-  passport.authenticate("facebook", {
-    scope: ["email"],
-    session: false,
-  }),
+authRouter.get("/facebook", passport.authenticate("facebook", {
+  scope: ["email"],
+  session: false,
+}),
 );
 
-authRouter.get(
-  "/facebook/callback",
+authRouter.get("/facebook/callback",
   passport.authenticate("facebook", {
     session: false,
     failureRedirect: "/login?error=oauth_failed",

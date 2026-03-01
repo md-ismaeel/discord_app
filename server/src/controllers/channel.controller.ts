@@ -1,22 +1,20 @@
 import type { Request, Response } from "express";
 import type { Types } from "mongoose";
-import { asyncHandler } from "../utils/asyncHandler.js";
-import { ApiError } from "../utils/ApiError.js";
-import { sendSuccess, sendCreated } from "../utils/response.js";
-import { ERROR_MESSAGES } from "../constants/errorMessages.js";
-import { SUCCESS_MESSAGES } from "../constants/successMessages.js";
-import type { IChannel } from "../types/models.js";
-import type { IServerMember } from "../types/models.js";
-import { ChannelModel } from "../models/channel.model.js";
-import { ServerModel } from "../models/server.model.js";
-import { ServerMemberModel } from "../models/serverMember.model.js";
-import { pubClient } from "../config/redis.config.js";
-import { getIO } from "../socket/socketHandler.js";
-import { HTTP_STATUS } from "../constants/httpStatus.js";
-import { validateObjectId } from "../utils/validateObjId.js";
+import { asyncHandler } from "@/utils/asyncHandler";
+import { ApiError } from "@/utils/ApiError";
+import { sendSuccess, sendCreated } from "@/utils/response";
+import { ERROR_MESSAGES } from "@/constants/errorMessages";
+import { SUCCESS_MESSAGES } from "@/constants/successMessages";
+import type { IChannel } from "@/types/models";
+import type { IServerMember } from "@/types/models";
+import { ChannelModel } from "@/models/channel.model";
+import { ServerModel } from "@/models/server.model";
+import { ServerMemberModel } from "@/models/serverMember.model";
+import { pubClient } from "@/config/redis.config";
+import { getIO } from "@/socket/socketHandler";
+import { validateObjectId } from "@/utils/validateObjId";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
+//  Constants 
 const CACHE_TTL = { CHANNEL: 1800, CHANNELS: 1800 } as const;
 
 const getCacheKey = {
@@ -24,8 +22,7 @@ const getCacheKey = {
   serverChannels: (id: string) => `server:${id}:channels`,
 };
 
-// ─── Cache invalidation ───────────────────────────────────────────────────────
-
+//  Cache invalidation 
 const invalidateChannelCache = async (
   serverId: Types.ObjectId | string,
   channelId?: string,
@@ -38,9 +35,8 @@ const invalidateChannelCache = async (
   await pubClient.del(...keys);
 };
 
-// ─── Permission helper ────────────────────────────────────────────────────────
+//  Permission helper 
 // IServerMember.role: "owner" | "admin" | "moderator" | "member"
-
 const checkMemberPermission = async (
   serverId: Types.ObjectId | string,
   userId: string,
@@ -64,19 +60,10 @@ const checkMemberPermission = async (
   return membership;
 };
 
-// ─── Create channel ───────────────────────────────────────────────────────────
-
+//  Create channel
 export const createChannel = asyncHandler(async (req: Request, res: Response) => {
-  const { serverId } = req.params;
-  const {
-    name,
-    type,
-    topic,
-    category,
-    position,
-    isPrivate,
-    allowedRoles,
-  } = req.body as {
+  const serverId = req.params.serverId as string;
+  const { name, type, topic, category, position, isPrivate, allowedRoles } = req.body as {
     name: string;
     type: IChannel["type"];
     topic?: string;
@@ -130,11 +117,12 @@ export const createChannel = asyncHandler(async (req: Request, res: Response) =>
   sendCreated(res, channel, "Channel created successfully.");
 });
 
-// ─── Get server channels ──────────────────────────────────────────────────────
-
+//  Get server channels
 export const getServerChannels = asyncHandler(async (req: Request, res: Response) => {
-  const { serverId } = req.params;
+  const serverId = validateObjectId(req.params.serverId as string);
   const userId = validateObjectId(req.user!._id);
+
+  //  Cache
   const cacheKey = getCacheKey.serverChannels(serverId);
 
   // IServerMember — verify membership first
@@ -167,13 +155,12 @@ export const getServerChannels = asyncHandler(async (req: Request, res: Response
 
   await pubClient.setex(cacheKey, CACHE_TTL.CHANNELS, JSON.stringify(visible));
 
-  sendSuccess(res, visible, SUCCESS_MESSAGES.CHANNELS_FETCHED);
+  return sendSuccess(res, visible, SUCCESS_MESSAGES.CHANNELS_FETCHED);
 });
 
-// ─── Get single channel ───────────────────────────────────────────────────────
-
+//  Get single channel
 export const getChannel = asyncHandler(async (req: Request, res: Response) => {
-  const { channelId } = req.params;
+  const channelId = req.params.channelId as string;
   const userId = validateObjectId(req.user!._id);
   const cacheKey = getCacheKey.channel(channelId);
 
@@ -185,7 +172,8 @@ export const getChannel = asyncHandler(async (req: Request, res: Response) => {
       user: userId,
     });
     if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
-    return sendSuccess(res, channel);
+    sendSuccess(res, channel);
+    return;
   }
 
   const channel = await ChannelModel.findById(channelId).lean<IChannel>();
@@ -211,10 +199,9 @@ export const getChannel = asyncHandler(async (req: Request, res: Response) => {
   sendSuccess(res, channel);
 });
 
-// ─── Update channel ───────────────────────────────────────────────────────────
-
+//  Update channel
 export const updateChannel = asyncHandler(async (req: Request, res: Response) => {
-  const { channelId } = req.params;
+  const channelId = req.params.channelId as string;
   const { name, topic, category, position, isPrivate, allowedRoles } =
     req.body as Partial<
       Pick<IChannel, "name" | "topic" | "category" | "position" | "isPrivate"> & {
@@ -264,10 +251,9 @@ export const updateChannel = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, channel, "Channel updated successfully.");
 });
 
-// ─── Delete channel ───────────────────────────────────────────────────────────
-
+//  Delete channel
 export const deleteChannel = asyncHandler(async (req: Request, res: Response) => {
-  const { channelId } = req.params;
+  const channelId = req.params.channelId as string;
   const userId = validateObjectId(req.user!._id);
   const io = getIO();
 
@@ -294,10 +280,9 @@ export const deleteChannel = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, null, "Channel deleted successfully.");
 });
 
-// ─── Reorder channels ─────────────────────────────────────────────────────────
-
+//  Reorder channels
 export const reorderChannels = asyncHandler(async (req: Request, res: Response) => {
-  const { serverId } = req.params;
+  const serverId = req.params.serverId as string;
   const { channelOrder } = req.body as {
     channelOrder: Array<{ channelId: string; position: number }>;
   };

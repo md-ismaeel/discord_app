@@ -4,16 +4,10 @@ import path from "path";
 import { ApiError } from "../utils/ApiError.js";
 import { HTTP_STATUS } from "../constants/httpStatus.js";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+//  Types
+type MulterFileFilter = (req: Request, file: Express.Multer.File, cb: FileFilterCallback,) => void;
 
-type MulterFileFilter = (
-  req: Request,
-  file: Express.Multer.File,
-  cb: FileFilterCallback,
-) => void;
-
-// ─── File filters ─────────────────────────────────────────────────────────────
-
+//  File filters
 /** Accept only web-safe images: jpeg, jpg, png, gif, webp */
 const imageFilter: MulterFileFilter = (_req, file, cb) => {
   const allowed = /^image\/(jpeg|jpg|png|gif|webp)$/i;
@@ -42,13 +36,13 @@ const fileFilter: MulterFileFilter = (_req, file, cb) => {
   }
 };
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
+//  Storage
 // Memory storage keeps files in RAM as Buffers — required for Cloudinary uploads
 // (which accept a Buffer, not a file path).
 
 const memoryStorage = multer.memoryStorage();
 
-// ─── Upload configurations ────────────────────────────────────────────────────
+//  Upload configurations
 
 /** Single avatar image — max 5 MB.  Usage: uploadAvatar.single("avatar") */
 export const uploadAvatar = multer({
@@ -85,16 +79,11 @@ export const uploadEmoji = multer({
   fileFilter: imageFilter,
 });
 
-// ─── Multer error handler ─────────────────────────────────────────────────────
+//  Multer error handler
 // Register AFTER your upload routes: app.use(handleMulterError)
 // Converts multer-specific errors to structured JSON responses.
 
-export const handleMulterError = (
-  err: unknown,
-  _req: Request,
-  res: Response,
-  next: NextFunction,
-): void => {
+export const handleMulterError = (err: unknown, _req: Request, res: Response, next: NextFunction): void => {
   if (!(err instanceof multer.MulterError)) {
     next(err); // Pass non-multer errors down the chain
     return;

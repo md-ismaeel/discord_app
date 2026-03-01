@@ -2,7 +2,7 @@
   "watch": ["src"],
   "ext": "ts,json",
   "ignore": ["src/**/*.spec.ts", "src/**/*.test.ts"],
-  "exec": "node --import tsx/esm -r tsconfig-paths/register src/server.ts",
+  "exec": "tsx src/server.ts",
   "env": {
     "NODE_ENV": "development"
   }

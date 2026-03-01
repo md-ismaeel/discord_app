@@ -1,19 +1,10 @@
 import express from "express";
-import {
-  validateBody,
-  validateParams,
-  validateQuery,
-} from "../middlewares/validate.middleware.js";
-import {
-  updateProfileSchema,
-  changePasswordSchema,
-  updateUserStatusSchema,
-} from "../validations/auth.validation.js";
-import * as userController from "../controllers/user.controller.js";
-import { authenticated } from "../middlewares/auth.middleware.js";
-import { uploadAvatar } from "../middlewares/upload.middleware.js";
-import { z } from "zod";
-import { userIdParamSchema } from "../validations/common.js";
+import { validateBody, validateParams, validateQuery } from "@/middlewares/validate.middleware";
+import { updateProfileSchema, changePasswordSchema, updateUserStatusSchema } from "@/validations/auth.validation";
+import * as userController from "@/controllers/user.controller";
+import { authenticated } from "@/middlewares/auth.middleware";
+import { uploadAvatar } from "@/middlewares/upload.middleware";
+import { searchUsersSchema, userIdParamSchema } from "@/validations/common";
 
 const userRouter = express.Router();
 
@@ -45,22 +36,19 @@ userRouter.delete("/me", userController.deleteAccount);
  * formData.append('avatar', fileInputElement.files[0]);
  * await fetch('/api/users/me/avatar', { method: 'POST', body: formData });
  */
-userRouter.post(
-  "/me/avatar",
+userRouter.post("/me/avatar",
   uploadAvatar.single("avatar"), // Multer middleware: receives file, stores in memory
   userController.uploadAvatar,   // Controller: gets req.file.buffer, uploads to Cloudinary
 );
 
 // Change user password
-userRouter.patch(
-  "/me/password",
+userRouter.patch("/me/password",
   validateBody(changePasswordSchema),
   userController.changePassword,
 );
 
 // Update user status (online/offline/away/dnd)
-userRouter.patch(
-  "/me/status",
+userRouter.patch("/me/status",
   validateBody(updateUserStatusSchema),
   userController.updateStatus,
 );
@@ -76,15 +64,13 @@ userRouter.get("/me/servers", userController.getUserServers);
 userRouter.get("/me/friends", userController.getFriends);
 
 // Add a friend
-userRouter.post(
-  "/me/friends/:userId",
+userRouter.post("/me/friends/:userId",
   validateParams(userIdParamSchema),
   userController.addFriend,
 );
 
 // Remove a friend
-userRouter.delete(
-  "/me/friends/:userId",
+userRouter.delete("/me/friends/:userId",
   validateParams(userIdParamSchema),
   userController.removeFriend,
 );
@@ -95,15 +81,13 @@ userRouter.delete(
 userRouter.get("/me/blocked", userController.getBlockedUsers);
 
 // Block a user
-userRouter.post(
-  "/me/blocked/:userId",
+userRouter.post("/me/blocked/:userId",
   validateParams(userIdParamSchema),
   userController.blockUser,
 );
 
 // Unblock a user
-userRouter.delete(
-  "/me/blocked/:userId",
+userRouter.delete("/me/blocked/:userId",
   validateParams(userIdParamSchema),
   userController.unblockUser,
 );
@@ -111,15 +95,8 @@ userRouter.delete(
 // USER SEARCH & DISCOVERY ROUTES
 
 // Search for users by username or email
-userRouter.get(
-  "/search",
-  validateQuery(
-    z.object({
-      q: z.string().min(1, "Search query required"),
-      page: z.string().regex(/^\d+$/).transform(Number).optional().default("1"),
-      limit: z.string().regex(/^\d+$/).transform(Number).optional().default("20"),
-    }),
-  ),
+userRouter.get("/search",
+  validateQuery(searchUsersSchema),
   userController.searchUsers,
 );
 

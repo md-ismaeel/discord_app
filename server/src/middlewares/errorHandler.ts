@@ -22,14 +22,9 @@ interface MongooseCastError extends Error {
 }
 
 // ─── Type guards
-const isValidationError = (err: unknown): err is MongooseValidationError =>
-  (err as Error)?.name === "ValidationError";
-
-const isDuplicateKeyError = (err: unknown): err is MongoDuplicateKeyError =>
-  (err as MongoDuplicateKeyError)?.code === 11000;
-
-const isCastError = (err: unknown): err is MongooseCastError =>
-  (err as Error)?.name === "CastError";
+const isValidationError = (err: unknown): err is MongooseValidationError => (err as Error)?.name === "ValidationError";
+const isDuplicateKeyError = (err: unknown): err is MongoDuplicateKeyError => (err as MongoDuplicateKeyError)?.code === 11000;
+const isCastError = (err: unknown): err is MongooseCastError => (err as Error)?.name === "CastError";
 
 // ─── Global error handler
 // Must have exactly 4 parameters — Express identifies error handlers this way.

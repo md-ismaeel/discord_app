@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 import { getEnv } from "./env.config.js";
 
-// ─── State ───────────────────────────────────────────────────────────────────
+//  State
 let isConnected = false;
 
-// ─── Connection ──────────────────────────────────────────────────────────────
+//  Connection
 export const connectDb = async (): Promise<void> => {
   if (isConnected) {
     console.log("MongoDB already connected");
@@ -46,8 +46,7 @@ export const connectDb = async (): Promise<void> => {
   }
 };
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
+//  Helpers
 /** Returns the current live connection status. */
 export const getDbStatus = (): boolean => isConnected;
 

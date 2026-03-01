@@ -1,31 +1,13 @@
 import express from "express";
-import { authenticated } from "../middlewares/auth.middleware.js";
-import { validateParams } from "../middlewares/validate.middleware.js";
-import * as friendRequestController from "../controllers/friendRequest.controller.js";
-import { z } from "zod";
+import { authenticated } from "@/middlewares/auth.middleware";
+import { validateParams } from "@/middlewares/validate.middleware";
+import * as friendRequestController from "@/controllers/friendRequest.controller";
+import { sendFriendRequestSchema, respondFriendRequestSchema, friendRequestIdParamSchema } from "@/validations/friendRequest.validation.js";
 
 const friendRequestRouter = express.Router();
 
-// ============================================================================
 // ALL ROUTES REQUIRE AUTHENTICATION
-// ============================================================================
 friendRequestRouter.use(authenticated);
-
-// ============================================================================
-// VALIDATION SCHEMAS
-// ============================================================================
-
-const userIdParamSchema = z.object({
-  userId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid user ID"),
-});
-
-const requestIdParamSchema = z.object({
-  requestId: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid request ID"),
-});
-
-// ============================================================================
-// FRIEND REQUEST ROUTES
-// ============================================================================
 
 //    Get all friend requests (sent and received)
 friendRequestRouter.get("/", friendRequestController.getAllFriendRequests);
@@ -37,30 +19,26 @@ friendRequestRouter.get("/pending", friendRequestController.getPendingRequests);
 friendRequestRouter.get("/sent", friendRequestController.getSentRequests);
 
 //    Send a friend request
-friendRequestRouter.post(
-  "/:userId",
-  validateParams(userIdParamSchema),
+friendRequestRouter.post("/:userId",
+  validateParams(sendFriendRequestSchema),
   friendRequestController.sendFriendRequest,
 );
 
 //    Accept a friend request
-friendRequestRouter.patch(
-  "/:requestId/accept",
-  validateParams(requestIdParamSchema),
+friendRequestRouter.patch("/:requestId/accept",
+  validateParams(respondFriendRequestSchema),
   friendRequestController.acceptFriendRequest,
 );
 
 //    Decline a friend request
-friendRequestRouter.patch(
-  "/:requestId/decline",
-  validateParams(requestIdParamSchema),
+friendRequestRouter.patch("/:requestId/decline",
+  validateParams(respondFriendRequestSchema),
   friendRequestController.declineFriendRequest,
 );
 
 //    Cancel a sent friend request
-friendRequestRouter.delete(
-  "/:requestId",
-  validateParams(requestIdParamSchema),
+friendRequestRouter.delete("/:requestId",
+  validateParams(friendRequestIdParamSchema),
   friendRequestController.cancelFriendRequest,
 );
 

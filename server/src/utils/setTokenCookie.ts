@@ -1,7 +1,7 @@
 import type { Response, CookieOptions } from "express";
-import { isProduction } from "../config/env.config.js";
+import { isProduction } from "@/config/env.config";
 
-// ─── Constants
+//  Constants
 const COOKIE_NAME = "token";
 const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000; // 7 days
 

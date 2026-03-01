@@ -1,29 +1,22 @@
 import jwt, { type SignOptions, type JwtPayload } from "jsonwebtoken";
 import { getEnv } from "@/config/env.config";
-import { ApiError } from "./ApiError.js";
+import { ApiError } from "./ApiError";
 
-// ─── Types
+//  Types
 export interface TokenPayload extends JwtPayload {
     userId: string;
 }
 
-// ─── Config
 // Read once at module load — avoids repeated getEnv calls on every request.
-
 const JWT_SECRET: string = getEnv("JWT_SECRET");
 const JWT_EXPIRE: string = getEnv("JWT_EXPIRE");
 
 if (!JWT_SECRET) {
-    throw new Error("JWT_SECRET environment variable is not set");
+    // throw new Error("JWT_SECRET environment variable is not set");
+    throw ApiError.badRequest("JWT_SECRET environment variable is not set");
 }
 
-// ─── Helpers
-
-/**
- * Sign a JWT containing the given userId.
- * @param userId - MongoDB ObjectId (string or ObjectId — .toString() is safe either way)
- * @returns Signed JWT string
- */
+// Sign a JWT containing the given userId.
 export const generateToken = (userId: string | { toString(): string }): string => {
     const options: SignOptions = {
         expiresIn: JWT_EXPIRE as SignOptions["expiresIn"],
@@ -35,9 +28,6 @@ export const generateToken = (userId: string | { toString(): string }): string =
  * Verify and decode a JWT.
  * Throws `ApiError.unauthorized` with a specific message for expired / invalid tokens
  * so the auth middleware can surface the right message without catching raw JWT errors.
- *
- * @param token - Raw JWT string
- * @returns Decoded payload with `userId`
  */
 export const verifyToken = (token: string): TokenPayload => {
     try {

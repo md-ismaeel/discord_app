@@ -3,14 +3,11 @@ import { ZodSchema, ZodError, type ZodIssue } from "zod";
 import { ApiError } from "@/utils/ApiError";
 import { HTTP_STATUS } from "@/constants/httpStatus";
 
-// ─── Types
-
+//  Types
 export interface ValidationFieldError {
   field: string;
   message: string;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Map Zod issues to the flat `{ field, message }[]` shape used by the API. */
 const formatZodError = (error: ZodError): ValidationFieldError[] =>
@@ -44,7 +41,7 @@ const parseWith = <T>(
   }
 };
 
-// ─── Middleware factories ─────────────────────────────────────────────────────
+// Middleware factories
 
 /**
  * Validate and replace `req.body` using a Zod schema.

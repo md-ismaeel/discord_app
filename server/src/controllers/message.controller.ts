@@ -1,40 +1,34 @@
 import type { Request, Response } from "express";
 import type { Types } from "mongoose";
-import { asyncHandler } from "../utils/asyncHandler.js";
-import { ApiError } from "../utils/ApiError.js";
-import { sendSuccess, sendCreated } from "../utils/response.js";
-import { ERROR_MESSAGES } from "../constants/errorMessages.js";
-import { MessageModel } from "../models/message.model.js";
-import { ChannelModel } from "../models/channel.model.js";
-import { ServerMemberModel } from "../models/serverMember.model.js";
-import { pubClient } from "../config/redis.config.js";
-import { emitToChannel, emitToUser } from "../socket/socketHandler.js";
-import { validateObjectId } from "../utils/validateObjId.js";
+import { asyncHandler } from "@/utils/asyncHandler";
+import { ApiError } from "@/utils/ApiError";
+import { sendSuccess, sendCreated } from "@/utils/response";
+import { ERROR_MESSAGES } from "@/constants/errorMessages";
+import type { IMessage, IChannel, IServerMember } from "@/types/models";
+import { MessageModel } from "@/models/message.model";
+import { ChannelModel } from "@/models/channel.model";
+import { ServerMemberModel } from "@/models/serverMember.model";
+import { pubClient } from "@/config/redis.config";
+import { emitToChannel, emitToUser } from "@/socket/socketHandler";
+import { validateObjectId } from "@/utils/validateObjId";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AuthReq extends Request {
-  user: { _id: Types.ObjectId };
-}
-
-// ─── Cache helpers ────────────────────────────────────────────────────────────
-
+// ─── Cache helpers
 const CACHE_TTL = {
-  MESSAGES: 300,
-  MESSAGE: 600,
-  PINNED: 900,
+  MESSAGES: 300, // 5 minutes
+  MESSAGE: 600,  // 10 minutes
+  PINNED: 900,   // 15 minutes
 } as const;
 
 const getCacheKey = {
-  channelMessages: (channelId: string, page: number, limit: number): string =>
+  channelMessages: (channelId: string, page: number, limit: number) =>
     `channel:${channelId}:messages:${page}:${limit}`,
-  message: (messageId: string): string => `message:${messageId}`,
-  pinnedMessages: (channelId: string): string => `channel:${channelId}:pinned`,
+  message: (messageId: string) => `message:${messageId}`,
+  pinnedMessages: (channelId: string) => `channel:${channelId}:pinned`,
 };
 
 const invalidateMessageCache = async (
   channelId: string,
-  messageId: string | null = null,
+  messageId?: string,
 ): Promise<void> => {
   const keys = await pubClient.keys(`channel:${channelId}:messages:*`);
   keys.push(getCacheKey.pinnedMessages(channelId));
@@ -42,25 +36,29 @@ const invalidateMessageCache = async (
   if (keys.length > 0) await pubClient.del(...keys);
 };
 
-// ─── Channel access helper ────────────────────────────────────────────────────
+// ─── Channel access helper
+type ChannelAccessResult = { channel: IChannel; membership: IServerMember };
 
-const checkChannelAccess = async (channelId: string, userId: string) => {
-  const channel = await ChannelModel.findById(channelId).lean();
+const checkChannelAccess = async (
+  channelId: string,
+  userId: string,
+): Promise<ChannelAccessResult> => {
+  const channel = await ChannelModel.findById(channelId).lean<IChannel>();
   if (!channel) throw ApiError.notFound("Channel not found.");
 
-  const membership = await ServerMemberModel.findOne({
+  const membership = await ServerMemberModel.findOne<IServerMember>({
     server: channel.server,
     user: userId,
   });
   if (!membership) throw ApiError.forbidden(ERROR_MESSAGES.NOT_SERVER_MEMBER);
 
+  // IChannel.isPrivate, IChannel.allowedRoles: Types.ObjectId[]
   if (channel.isPrivate && !["owner", "admin"].includes(membership.role)) {
-    if (
-      channel.allowedRoles.length > 0 &&
-      !channel.allowedRoles.some((roleId) =>
-        membership.roles?.some((r) => r.toString() === roleId.toString()),
-      )
-    ) {
+    const hasRole = channel.allowedRoles.some((roleId) =>
+      // IServerMember.roles: Types.ObjectId[] — compare as strings
+      membership.roles?.some((r) => r.toString() === roleId.toString()),
+    );
+    if (!hasRole) {
       throw ApiError.forbidden("You don't have access to this private channel.");
     }
   }
@@ -68,18 +66,18 @@ const checkChannelAccess = async (channelId: string, userId: string) => {
   return { channel, membership };
 };
 
-// ─── Create message ───────────────────────────────────────────────────────────
-
-export const createMessage = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { channelId } = req.params;
+// ─── Create a new message in a channel
+export const createMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { channelId } = req.params as { channelId: string };
   const { content, attachments, mentions, replyTo } = req.body as {
     content: string;
-    attachments?: unknown[];
+    attachments?: IMessage["attachments"];
     mentions?: string[];
     replyTo?: string;
   };
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
 
+  // IChannel.server stamped on the message for server-level queries
   const { channel } = await checkChannelAccess(channelId, userId);
 
   const message = await MessageModel.create({
@@ -89,10 +87,10 @@ export const createMessage = asyncHandler(async (req: AuthReq, res: Response) =>
     server: channel.server,
     attachments: attachments ?? [],
     mentions: mentions ?? [],
-    replyTo: replyTo ?? null,
+    replyTo: replyTo ?? undefined,
   });
 
-  const populated = await MessageModel.findById(message._id)
+  const populatedMessage = await MessageModel.findById<IMessage>(message._id)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .lean();
@@ -100,34 +98,33 @@ export const createMessage = asyncHandler(async (req: AuthReq, res: Response) =>
   await invalidateMessageCache(channelId);
 
   emitToChannel(channelId, "message:created", {
-    message: populated,
+    message: populatedMessage,
     channelId,
     timestamp: new Date(),
   });
 
-  // FIX: original used emitToUser without importing it — added to import above
+  // IMessage.mentions: Types.ObjectId[] — notify each mentioned user
   if (mentions && mentions.length > 0) {
     mentions.forEach((mentionedUserId) => {
       emitToUser(mentionedUserId, "message:mentioned", {
-        message: populated,
+        message: populatedMessage,
         channelId,
         timestamp: new Date(),
       });
     });
   }
 
-  sendCreated(res, populated, "Message sent successfully.");
+  return sendCreated(res, populatedMessage, "Message sent successfully.");
 });
 
-// ─── Get channel messages ─────────────────────────────────────────────────────
-
-export const getChannelMessages = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { channelId } = req.params;
-  // FIX: query params are strings — parse explicitly
+// ─── Get messages from a channel (paginated)
+export const getChannelMessages = asyncHandler(async (req: Request, res: Response) => {
+  const { channelId } = req.params as { channelId: string };
+  // Query params are always strings from Express — parse explicitly
   const page = parseInt((req.query.page as string) ?? "1", 10);
   const limit = parseInt((req.query.limit as string) ?? "50", 10);
   const before = req.query.before as string | undefined;
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
 
   await checkChannelAccess(channelId, userId);
 
@@ -140,32 +137,28 @@ export const getChannelMessages = asyncHandler(async (req: AuthReq, res: Respons
 
   const skip = (page - 1) * limit;
 
-  // FIX: typed query object instead of dynamic property assignment
-  interface MsgQuery {
-    channel: string;
-    createdAt?: { $lt: Date };
-  }
-
-  const query: MsgQuery = { channel: channelId };
+  // Typed filter — avoids dynamic property mutation
+  type MsgFilter = { channel: string; createdAt?: { $lt: Date } };
+  const filter: MsgFilter = { channel: channelId };
 
   if (before) {
-    const beforeMessage = await MessageModel.findById(before);
-    if (beforeMessage) query.createdAt = { $lt: beforeMessage.createdAt as Date };
+    const pivot = await MessageModel.findById(before).lean<IMessage>();
+    if (pivot) filter.createdAt = { $lt: pivot.createdAt as Date };
   }
 
-  const messages = await MessageModel.find(query)
+  const messages = await MessageModel.find(filter)
     .sort({ createdAt: -1 })
     .limit(limit)
     .skip(skip)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .populate("mentions", "username avatar")
-    .lean();
+    .lean<IMessage[]>();
 
   const total = await MessageModel.countDocuments({ channel: channelId });
 
   const result = {
-    messages: messages.reverse(),
+    messages: messages.reverse(), // oldest first
     pagination: {
       page,
       limit,
@@ -179,24 +172,23 @@ export const getChannelMessages = asyncHandler(async (req: AuthReq, res: Respons
     await pubClient.setex(cacheKey, CACHE_TTL.MESSAGES, JSON.stringify(result));
   }
 
-  sendSuccess(res, result);
+  return sendSuccess(res, result);
 });
 
-// ─── Get single message ───────────────────────────────────────────────────────
-
-export const getMessage = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId } = req.params;
-  const userId = validateObjectId(req.user._id);
+// ─── Get a single message by ID
+export const getMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId } = req.params as { messageId: string };
+  const userId = validateObjectId(req.user!._id);
   const cacheKey = getCacheKey.message(messageId);
 
   const cached = await pubClient.get(cacheKey);
   if (cached) {
-    const message = JSON.parse(cached);
+    const message = JSON.parse(cached) as IMessage;
     await checkChannelAccess(message.channel.toString(), userId);
     return sendSuccess(res, message);
   }
 
-  const message = await MessageModel.findById(messageId)
+  const message = await MessageModel.findById<IMessage>(messageId)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .populate("mentions", "username avatar")
@@ -207,19 +199,19 @@ export const getMessage = asyncHandler(async (req: AuthReq, res: Response) => {
   await checkChannelAccess(message.channel.toString(), userId);
   await pubClient.setex(cacheKey, CACHE_TTL.MESSAGE, JSON.stringify(message));
 
-  sendSuccess(res, message);
+  return sendSuccess(res, message);
 });
 
-// ─── Update message ───────────────────────────────────────────────────────────
-
-export const updateMessage = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId } = req.params;
+// ─── Update / Edit a message
+export const updateMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId } = req.params as { messageId: string };
   const { content } = req.body as { content: string };
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
 
-  const message = await MessageModel.findById(messageId);
+  const message = await MessageModel.findById<IMessage>(messageId);
   if (!message) throw ApiError.notFound("Message not found.");
 
+  // IMessage.author: Types.ObjectId
   if (message.author.toString() !== userId) {
     const { membership } = await checkChannelAccess(message.channel.toString(), userId);
     if (!["owner", "admin"].includes(membership.role)) {
@@ -232,7 +224,7 @@ export const updateMessage = asyncHandler(async (req: AuthReq, res: Response) =>
   message.editedAt = new Date();
   await message.save();
 
-  const updated = await MessageModel.findById(messageId)
+  const updatedMessage = await MessageModel.findById<IMessage>(messageId)
     .populate("author", "username avatar status")
     .populate("replyTo", "content author")
     .lean();
@@ -240,20 +232,19 @@ export const updateMessage = asyncHandler(async (req: AuthReq, res: Response) =>
   await invalidateMessageCache(message.channel.toString(), messageId);
 
   emitToChannel(message.channel.toString(), "message:updated", {
-    message: updated,
+    message: updatedMessage,
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updated, "Message updated successfully.");
+  return sendSuccess(res, updatedMessage, "Message updated successfully.");
 });
 
-// ─── Delete message ───────────────────────────────────────────────────────────
+// ─── Delete a message
+export const deleteMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId } = req.params as { messageId: string };
+  const userId = validateObjectId(req.user!._id);
 
-export const deleteMessage = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId } = req.params;
-  const userId = validateObjectId(req.user._id);
-
-  const message = await MessageModel.findById(messageId);
+  const message = await MessageModel.findById<IMessage>(messageId);
   if (!message) throw ApiError.notFound("Message not found.");
 
   if (message.author.toString() !== userId) {
@@ -274,16 +265,15 @@ export const deleteMessage = asyncHandler(async (req: AuthReq, res: Response) =>
     timestamp: new Date(),
   });
 
-  sendSuccess(res, null, "Message deleted successfully.");
+  return sendSuccess(res, null, "Message deleted successfully.");
 });
 
-// ─── Toggle pin ───────────────────────────────────────────────────────────────
+// ─── Pin / Unpin a message
+export const togglePinMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId } = req.params as { messageId: string };
+  const userId = validateObjectId(req.user!._id);
 
-export const togglePinMessage = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId } = req.params;
-  const userId = validateObjectId(req.user._id);
-
-  const message = await MessageModel.findById(messageId);
+  const message = await MessageModel.findById<IMessage>(messageId);
   if (!message) throw ApiError.notFound("Message not found.");
 
   const { membership } = await checkChannelAccess(message.channel.toString(), userId);
@@ -291,34 +281,34 @@ export const togglePinMessage = asyncHandler(async (req: AuthReq, res: Response)
     throw ApiError.forbidden("Only admins and moderators can pin messages.");
   }
 
+  // IMessage.isPinned: boolean
   message.isPinned = !message.isPinned;
   await message.save();
 
-  const updated = await MessageModel.findById(messageId)
+  const updatedMessage = await MessageModel.findById<IMessage>(messageId)
     .populate("author", "username avatar status")
     .lean();
 
   await invalidateMessageCache(message.channel.toString(), messageId);
 
   emitToChannel(message.channel.toString(), "message:pinned", {
-    message: updated,
+    message: updatedMessage,
     isPinned: message.isPinned,
     pinnedBy: userId,
     timestamp: new Date(),
   });
 
-  sendSuccess(
+  return sendSuccess(
     res,
-    updated,
+    updatedMessage,
     `Message ${message.isPinned ? "pinned" : "unpinned"} successfully.`,
   );
 });
 
-// ─── Get pinned messages ──────────────────────────────────────────────────────
-
-export const getPinnedMessages = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { channelId } = req.params;
-  const userId = validateObjectId(req.user._id);
+// ─── Get pinned messages in a channel
+export const getPinnedMessages = asyncHandler(async (req: Request, res: Response) => {
+  const { channelId } = req.params as { channelId: string };
+  const userId = validateObjectId(req.user!._id);
 
   await checkChannelAccess(channelId, userId);
 
@@ -326,42 +316,43 @@ export const getPinnedMessages = asyncHandler(async (req: AuthReq, res: Response
   const cached = await pubClient.get(cacheKey);
   if (cached) return sendSuccess(res, JSON.parse(cached));
 
-  const pinned = await MessageModel.find({ channel: channelId, isPinned: true })
+  const pinnedMessages = await MessageModel.find({ channel: channelId, isPinned: true })
     .sort({ createdAt: -1 })
     .populate("author", "username avatar status")
-    .lean();
+    .lean<IMessage[]>();
 
-  await pubClient.setex(cacheKey, CACHE_TTL.PINNED, JSON.stringify(pinned));
+  await pubClient.setex(cacheKey, CACHE_TTL.PINNED, JSON.stringify(pinnedMessages));
 
-  sendSuccess(res, pinned);
+  return sendSuccess(res, pinnedMessages);
 });
 
-// ─── Add reaction ─────────────────────────────────────────────────────────────
-
-export const addReaction = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId } = req.params;
+// ─── Add reaction to a message
+export const addReaction = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId } = req.params as { messageId: string };
   const { emoji } = req.body as { emoji: string };
-  const userId = validateObjectId(req.user._id);
+  const userId = validateObjectId(req.user!._id);
 
-  const message = await MessageModel.findById(messageId);
+  const message = await MessageModel.findById<IMessage>(messageId);
   if (!message) throw ApiError.notFound("Message not found.");
 
   await checkChannelAccess(message.channel.toString(), userId);
 
-  const existing = message.reactions.find((r) => r.emoji === emoji);
-  if (existing) {
-    // FIX: original used Array.includes on ObjectId array — must compare via .toString()
-    if (existing.users.some((id) => id.toString() === userId)) {
+  // IMessage.reactions: Array<{ emoji: string; users: Types.ObjectId[] }>
+  const existingReaction = message.reactions.find((r) => r.emoji === emoji);
+
+  if (existingReaction) {
+    // ObjectId[] — must compare via .toString(), not .includes()
+    if (existingReaction.users.some((id) => id.toString() === userId)) {
       throw ApiError.badRequest("You already reacted with this emoji.");
     }
-    existing.users.push(userId as unknown as Types.ObjectId);
+    existingReaction.users.push(userId as unknown as Types.ObjectId);
   } else {
     message.reactions.push({ emoji, users: [userId as unknown as Types.ObjectId] });
   }
 
   await message.save();
 
-  const updated = await MessageModel.findById(messageId)
+  const updatedMessage = await MessageModel.findById<IMessage>(messageId)
     .populate("author", "username avatar status")
     .populate("reactions.users", "username avatar")
     .lean();
@@ -375,16 +366,15 @@ export const addReaction = asyncHandler(async (req: AuthReq, res: Response) => {
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updated, "Reaction added successfully.");
+  return sendSuccess(res, updatedMessage, "Reaction added successfully.");
 });
 
-// ─── Remove reaction ──────────────────────────────────────────────────────────
+// ─── Remove reaction from a message
+export const removeReaction = asyncHandler(async (req: Request, res: Response) => {
+  const { messageId, emoji } = req.params as { messageId: string; emoji: string };
+  const userId = validateObjectId(req.user!._id);
 
-export const removeReaction = asyncHandler(async (req: AuthReq, res: Response) => {
-  const { messageId, emoji } = req.params;
-  const userId = validateObjectId(req.user._id);
-
-  const message = await MessageModel.findById(messageId);
+  const message = await MessageModel.findById<IMessage>(messageId);
   if (!message) throw ApiError.notFound("Message not found.");
 
   await checkChannelAccess(message.channel.toString(), userId);
@@ -392,7 +382,7 @@ export const removeReaction = asyncHandler(async (req: AuthReq, res: Response) =
   const reaction = message.reactions.find((r) => r.emoji === emoji);
   if (!reaction) throw ApiError.notFound("Reaction not found.");
 
-  // FIX: same ObjectId string comparison fix as addReaction
+  // ObjectId[] string comparison
   reaction.users = reaction.users.filter((id) => id.toString() !== userId);
 
   if (reaction.users.length === 0) {
@@ -401,7 +391,7 @@ export const removeReaction = asyncHandler(async (req: AuthReq, res: Response) =
 
   await message.save();
 
-  const updated = await MessageModel.findById(messageId)
+  const updatedMessage = await MessageModel.findById<IMessage>(messageId)
     .populate("author", "username avatar status")
     .lean();
 
@@ -414,7 +404,7 @@ export const removeReaction = asyncHandler(async (req: AuthReq, res: Response) =
     timestamp: new Date(),
   });
 
-  sendSuccess(res, updated, "Reaction removed successfully.");
+  return sendSuccess(res, updatedMessage, "Reaction removed successfully.");
 });
 
 export default {

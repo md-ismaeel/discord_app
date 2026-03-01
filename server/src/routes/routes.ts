@@ -11,39 +11,43 @@ import { debugRouter } from "./debug.routes.js";
 
 const router = express.Router();
 
-// Debug middleware (can remove in production)
-router.use((req, res, next) => {
-  if (req.method !== "GET") {
-    console.log(`[${req.method}] ${req.url} - Body:`, req.body);
-  }
-  next();
-});
+// REQUEST LOGGER (remove or guard behind NODE_ENV check in production)
+if (process.env.NODE_ENV !== "production") {
+  router.use((req, _res, next) => {
+    if (req.method !== "GET") {
+      console.log(`[${req.method}] ${req.url} - Body:`, req.body);
+    }
+    next();
+  });
+}
 
-// Authentication routes
+// Auth — login, register, OAuth, refresh, logout
 router.use("/auth", authRouter);
 
-// User routes (profile, friends, blocked users)
+// Users — profile, avatar, friends, blocking, search
 router.use("/users", userRouter);
 
-// Server routes (includes channels)
+// Servers — CRUD, members, channels, invites (server-scoped), roles (server-scoped)
 router.use("/servers", serverRouter);
 
-// Message routes (channel messages)
-router.use("/", messageRouter);
+// Message routes 
+router.use("/", messageRouter)
 
-// Direct message routes
+// Direct messages — conversations, unread counts, single message ops
 router.use("/direct-messages", directMessageRouter);
 
-// Friend request routes
+// Friend requests — send, accept, decline, cancel
 router.use("/friend-requests", friendRequestRouter);
 
-// Invite routes (server invitations)
+// Invites — public preview, join-by-code, revoke, cleanup
+// Server-scoped invite creation/listing lives in /servers/:serverId/invites
 router.use("/invites", inviteRouter);
 
-// Role routes (permission management)
+// Roles — individual role CRUD, member-role assignment
+// Server-scoped role creation/listing lives in /servers/:serverId/roles
 router.use("/roles", roleRouter);
 
-// Debug routes
+// Debug — Redis cache inspection (blocked in production, auth-gated in dev)
 router.use("/debug", debugRouter);
 
 export default router;

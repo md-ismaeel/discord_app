@@ -1,8 +1,6 @@
 import { z } from "zod";
 
-// ─── Shared constants
 // Defined once here so all auth schemas stay in sync with the user model limits.
-
 const USERNAME_MIN = 3;
 const USERNAME_MAX = 30;
 const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
@@ -13,7 +11,7 @@ const NAME_MAX = 50;
 const BIO_MAX = 500;
 const CUSTOM_STATUS_MAX = 128;
 
-// ─── Re-usable field definitions
+// Re-usable field definitions
 
 const usernameField = z
     .string()
@@ -51,7 +49,7 @@ const avatarField = z
     .nullable()
     .optional();
 
-// ─── Register
+// Register
 
 export const registerSchema = z.object({
     username: usernameField,
@@ -62,7 +60,7 @@ export const registerSchema = z.object({
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 
-// ─── Login 
+//  Login 
 // FIX: the original schema allowed both email and username to be absent without
 // any error. Added .refine() to enforce that at least one identifier is supplied.
 
@@ -79,7 +77,7 @@ export const loginSchema = z
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
-// ─── Update profile
+// Update profile
 // FIX: original had two nearly identical update schemas (updateProfileSchema and
 // updateUserProfileSchema). Merged into one authoritative schema.
 
@@ -100,7 +98,7 @@ export const updateProfileSchema = z.object({
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
-// ─── Change password
+// Change password
 export const changePasswordSchema = z
     .object({
         currentPassword: z.string().min(1, "Current password is required"),
@@ -114,7 +112,7 @@ export const changePasswordSchema = z
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
-// ─── Update status
+// Update status
 export const updateUserStatusSchema = z.object({
     status: statusField,
     customStatus: z
@@ -125,7 +123,7 @@ export const updateUserStatusSchema = z.object({
 
 export type UpdateUserStatusInput = z.infer<typeof updateUserStatusSchema>;
 
-// ─── Email verification
+//  Email verification
 export const verifyEmailSchema = z.object({
     email: emailField,
     code: z
@@ -136,14 +134,14 @@ export const verifyEmailSchema = z.object({
 
 export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 
-// ─── Password reset request
+// Password reset request
 export const resetPasswordRequestSchema = z.object({
     email: emailField,
 });
 
 export type ResetPasswordRequestInput = z.infer<typeof resetPasswordRequestSchema>;
 
-// ─── Password reset
+// Password reset
 export const resetPasswordSchema = z
     .object({
         token: z.string().min(1, "Reset token is required"),
