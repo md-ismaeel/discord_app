@@ -87,10 +87,7 @@ export const storePhoneOtp = async (phone: string, otp: string): Promise<void> =
  * Verify a phone OTP. Increments attempt counter on failure.
  * Returns `"ok"` | `"invalid"` | `"expired"` | `"locked"`.
  */
-export const verifyPhoneOtp = async (
-    phone: string,
-    candidate: string,
-): Promise<"ok" | "invalid" | "expired" | "locked"> => {
+export const verifyPhoneOtp = async (phone: string, candidate: string): Promise<"ok" | "invalid" | "expired" | "locked"> => {
     const attemptsKey = `otp:phone:attempts:${phone}`;
     const attempts = parseInt((await pubClient.get(attemptsKey)) ?? "0", 10);
     if (attempts >= OTP_MAX_ATTEMPTS) return "locked";
@@ -116,9 +113,9 @@ export const verifyPhoneOtp = async (
 
 /**
  * Persist a refresh token for a user.
- * TTL: 30 days (2 592 000 seconds)
+ * TTL: 30 days (2 592 000 seconds) TTL (Time To Live) is the time it takes for a key to expire.
  */
-export const storeRefreshToken = async (userId: string, token: string,): Promise<void> => {
+export const storeRefreshToken = async (userId: string, token: string): Promise<void> => {
     await pubClient.setex(`refresh:${userId}`, 2_592_000, token);
 };
 

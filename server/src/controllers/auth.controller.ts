@@ -218,7 +218,7 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
   return sendSuccess(res, { token: newToken }, "Token refreshed successfully.");
 });
 
-// ─── OTP helpers ──────────────────────────────────────────────────────────────
+//  OTP helpers
 
 /** Cryptographically adequate 6-digit OTP (000000–999999). */
 const generateOtp = (): string =>
@@ -233,7 +233,7 @@ const handleOtpResult = (result: "ok" | "invalid" | "expired" | "locked"): void 
   throw ApiError.badRequest(ERROR_MESSAGES.OTP_INVALID);
 };
 
-// ─── Email OTP ────────────────────────────────────────────────────────────────
+//  Email OTP
 
 /**
  * POST /auth/send-email-otp
@@ -284,12 +284,9 @@ export const verifyEmailOtp = asyncHandler(async (req: Request, res: Response) =
   return sendSuccess(res, null, SUCCESS_MESSAGES.EMAIL_VERIFIED);
 });
 
-// ─── Phone OTP ────────────────────────────────────────────────────────────────
+//  Phone OTP
 
-/**
- * POST /auth/send-phone-otp
- * Generate a 6-digit OTP, store it (hashed) in Redis, and SMS it.
- */
+// * Generate a 6-digit OTP, store it (hashed) in Redis, and SMS it.
 export const sendPhoneOtp = asyncHandler(async (req: Request, res: Response) => {
   const { phoneNumber } = req.body as { phoneNumber: string };
 

@@ -88,9 +88,7 @@ const DEFAULTS: OptionalEnv = {
 
 //  Validation
 export const validateEnv = (): void => {
-  const missing = REQUIRED_ENV_KEYS.filter(
-    (key) => !process.env[key]?.trim(),
-  );
+  const missing = REQUIRED_ENV_KEYS.filter((key) => !process.env[key]?.trim());
 
   if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(", ")}`);

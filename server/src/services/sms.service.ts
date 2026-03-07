@@ -1,7 +1,7 @@
 import twilio from "twilio";
 import { getEnv } from "@/config/env.config";
 
-// ─── Client (created lazily) ──────────────────────────────────────────────────
+//  Client (created lazily)
 
 let _client: ReturnType<typeof twilio> | null = null;
 
@@ -21,7 +21,7 @@ const getClient = (): ReturnType<typeof twilio> => {
     return _client;
 };
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+//  Public API
 
 /**
  * Send an OTP verification SMS to the given phone number.
